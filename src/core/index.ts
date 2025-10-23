@@ -4,3 +4,4 @@ export * from "./config/settings";
 export * from "./config/env";
 export * from "./ai/llmProvider";
 export * from "./repos";
+export * from "./seed";

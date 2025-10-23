@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, KeyboardEvent, useState } from "react";
 
 import type { TranslationKey } from "../../i18n";
 
@@ -22,8 +22,7 @@ export default function ChatComposer({
     setMessage("");
   };
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const submitMessage = async () => {
     const trimmed = message.trim();
 
     if (!trimmed || disabled) {
@@ -39,6 +38,18 @@ export default function ChatComposer({
     }
   };
 
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    await submitMessage();
+  };
+
+  const handleKeyDown = async (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault();
+      await submitMessage();
+    }
+  };
+
   return (
     <form
       onSubmit={handleSubmit}
@@ -50,6 +61,7 @@ export default function ChatComposer({
         placeholder={t("composerPlaceholder")}
         rows={2}
         disabled={disabled || isSubmitting}
+        onKeyDown={handleKeyDown}
         className="flex-1 resize-none rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm text-slate-200 outline-none transition disabled:opacity-60 focus:border-white/30"
       />
       <button

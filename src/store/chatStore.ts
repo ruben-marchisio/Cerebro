@@ -14,9 +14,7 @@ export const useChatStore = create<ChatState>((set) => ({
     set((state) => ({
       activeProjectId: projectId,
       activeThreadId:
-        projectId && state.activeProjectId === projectId
-          ? state.activeThreadId
-          : null,
+        state.activeProjectId === projectId ? state.activeThreadId : null,
     })),
   setActiveThread: (threadId) =>
     set(() => ({

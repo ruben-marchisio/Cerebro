@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { HashRouter, Route, Routes, useNavigate } from "react-router-dom";
 import WindowControls from "./components/WindowControls";
 import Button from "./components/ui/Button";
@@ -12,7 +12,15 @@ import {
 } from "./i18n";
 import Dashboard from "./pages/Dashboard";
 import Chat from "./pages/Chat";
-import { useUIStore } from "./store/uiStore";
+import { defaultSettings } from "./core/config/settings";
+import { useSettingsStore } from "./store/settingsStore";
+
+if (typeof window !== "undefined") {
+  const settingsState = useSettingsStore.getState();
+  if (!settingsState.isHydrated) {
+    void settingsState.hydrate();
+  }
+}
 
 type Translator = (key: TranslationKey) => string;
 
@@ -71,13 +79,30 @@ function Settings() {
 }
 
 export default function App() {
-  const locale = useUIStore((state) => state.locale);
-  const setLocale = useUIStore((state) => state.setLocale);
+  const locale = useSettingsStore((state) => state.settings.language);
+  const updateLanguage = useSettingsStore((state) => state.setLanguage);
+  const isSettingsHydrated = useSettingsStore((state) => state.isHydrated);
+
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      document.documentElement.lang = locale;
+    }
+  }, [locale]);
 
   const t = useMemo<Translator>(
     () => (key: TranslationKey) => translate(locale, key),
     [locale],
   );
+
+  if (!isSettingsHydrated) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-slate-950 text-slate-200">
+        <p className="text-sm">
+          {translate(defaultSettings.language, "loading")}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <HashRouter>
@@ -107,7 +132,7 @@ export default function App() {
               onChange={(event) => {
                 const next = event.target.value;
                 if (isLocale(next)) {
-                  setLocale(next);
+                  void updateLanguage(next);
                 }
               }}
               className="rounded-md border border-white/10 bg-slate-900/80 px-2 py-1 text-xs text-slate-200 outline-none transition hover:border-white/20 focus:border-white/40"

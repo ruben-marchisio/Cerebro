@@ -8,6 +8,7 @@ type Translator = (key: TranslationKey) => string;
 type SidebarProjectsProps = {
   projects: ProjectRecord[];
   activeProjectId: string | null;
+  isLoading: boolean;
   onSelect: (projectId: string | null) => void;
   onCreate: (name: string) => Promise<void> | void;
   t: Translator;
@@ -16,6 +17,7 @@ type SidebarProjectsProps = {
 export default function SidebarProjects({
   projects,
   activeProjectId,
+  isLoading,
   onSelect,
   onCreate,
   t,
@@ -59,24 +61,30 @@ export default function SidebarProjects({
         >
           <span className="block truncate">{t("globalProject")}</span>
         </button>
-        {projects.map((project) => {
-          const isActive = project.id === activeProjectId;
-          return (
-            <button
-              key={project.id}
-              type="button"
-              onClick={() => onSelect(project.id)}
-              className={[
-                "rounded-lg px-3 py-2 text-left text-sm font-medium transition",
-                isActive
-                  ? "bg-blue-500/20 text-blue-100"
-                  : "bg-white/5 text-slate-200 hover:bg-white/10",
-              ].join(" ")}
-            >
-              <span className="block truncate">{project.name}</span>
-            </button>
-          );
-        })}
+        {isLoading ? (
+          <p className="text-xs text-slate-500">{t("loading")}</p>
+        ) : projects.length > 0 ? (
+          projects.map((project) => {
+            const isActive = project.id === activeProjectId;
+            return (
+              <button
+                key={project.id}
+                type="button"
+                onClick={() => onSelect(project.id)}
+                className={[
+                  "rounded-lg px-3 py-2 text-left text-sm font-medium transition",
+                  isActive
+                    ? "bg-blue-500/20 text-blue-100"
+                    : "bg-white/5 text-slate-200 hover:bg-white/10",
+                ].join(" ")}
+              >
+                <span className="block truncate">{project.name}</span>
+              </button>
+            );
+          })
+        ) : (
+          <p className="text-xs text-slate-500">{t("emptyProjects")}</p>
+        )}
       </nav>
       <form className="flex flex-col gap-2" onSubmit={handleSubmit}>
         <label className="text-xs font-medium uppercase tracking-[0.2em] text-slate-500">

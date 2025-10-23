@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import ChatComposer from "../components/chat/ChatComposer";
 import ChatView from "../components/chat/ChatView";
 import SidebarProjects from "../components/chat/SidebarProjects";
 import ThreadList from "../components/chat/ThreadList";
 import {
-  initDB,
+  ensureSeed,
   MessageRecord,
   messagesRepo,
   ProjectRecord,
@@ -26,14 +26,30 @@ type ChatProps = {
   t: Translator;
 };
 
+type ChatMessage = MessageRecord & {
+  pending?: boolean;
+};
+
 const sortByDate = <T extends { createdAt: string }>(collection: T[]): T[] =>
   [...collection].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+const createAssistantPlaceholder = (threadId: string): ChatMessage => ({
+  id: `assistant-placeholder-${threadId}-${Date.now()}`,
+  threadId,
+  role: "assistant",
+  content: "...",
+  createdAt: new Date().toISOString(),
+  pending: true,
+});
 
 export default function Chat({ t }: ChatProps) {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [threads, setThreads] = useState<ThreadRecord[]>([]);
-  const [messages, setMessages] = useState<MessageRecord[]>([]);
-  const [isReady, setIsReady] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [projectsLoading, setProjectsLoading] = useState(true);
+  const [threadsLoading, setThreadsLoading] = useState(false);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [hasBootstrapped, setHasBootstrapped] = useState(false);
   const [isSending, setIsSending] = useState(false);
 
   const activeProjectId = useChatStore((state) => state.activeProjectId);
@@ -41,26 +57,28 @@ export default function Chat({ t }: ChatProps) {
   const setActiveProject = useChatStore((state) => state.setActiveProject);
   const setActiveThread = useChatStore((state) => state.setActiveThread);
 
+  const hasActiveContext =
+    hasBootstrapped &&
+    (activeProjectId === null || typeof activeProjectId === "string");
+
   useEffect(() => {
     let cancelled = false;
 
     const bootstrap = async () => {
       try {
-        await initDB();
+        setProjectsLoading(true);
+        await ensureSeed();
         const allProjects = await projectsRepo.findAll();
         if (cancelled) {
           return;
         }
         setProjects(allProjects);
-
-        if (allProjects.length > 0 && !getActiveProjectId()) {
-          setActiveProject(allProjects[0].id);
-        }
       } catch (error) {
         console.error("Failed to initialize chat repositories", error);
       } finally {
         if (!cancelled) {
-          setIsReady(true);
+          setProjectsLoading(false);
+          setHasBootstrapped(true);
         }
       }
     };
@@ -70,14 +88,22 @@ export default function Chat({ t }: ChatProps) {
     return () => {
       cancelled = true;
     };
-  }, [setActiveProject]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
+    if (!hasBootstrapped) {
+      return;
+    }
+
     let cancelled = false;
 
     const fetchThreads = async () => {
       try {
-        const projectThreads = await threadsRepo.findByProject(activeProjectId);
+        setThreadsLoading(true);
+        const projectThreads = await threadsRepo.findByProject(
+          activeProjectId ?? null,
+        );
         if (cancelled) {
           return;
         }
@@ -86,7 +112,9 @@ export default function Chat({ t }: ChatProps) {
 
         if (projectThreads.length === 0) {
           setActiveThread(null);
-          setMessages([]);
+          if (activeProjectId !== null) {
+            setMessages([]);
+          }
           return;
         }
 
@@ -100,6 +128,10 @@ export default function Chat({ t }: ChatProps) {
         }
       } catch (error) {
         console.error("Failed to load threads", error);
+      } finally {
+        if (!cancelled) {
+          setThreadsLoading(false);
+        }
       }
     };
 
@@ -108,11 +140,16 @@ export default function Chat({ t }: ChatProps) {
     return () => {
       cancelled = true;
     };
-  }, [activeProjectId, setActiveThread]);
+  }, [activeProjectId, hasBootstrapped, setActiveThread]);
 
   useEffect(() => {
+    if (!hasBootstrapped) {
+      return;
+    }
+
     if (!activeThreadId) {
       setMessages([]);
+      setMessagesLoading(false);
       return;
     }
 
@@ -120,6 +157,7 @@ export default function Chat({ t }: ChatProps) {
 
     const fetchMessages = async () => {
       try {
+        setMessagesLoading(true);
         const threadMessages = await messagesRepo.findByThread(activeThreadId);
         if (cancelled) {
           return;
@@ -127,6 +165,10 @@ export default function Chat({ t }: ChatProps) {
         setMessages(threadMessages);
       } catch (error) {
         console.error("Failed to load messages", error);
+      } finally {
+        if (!cancelled) {
+          setMessagesLoading(false);
+        }
       }
     };
 
@@ -135,79 +177,156 @@ export default function Chat({ t }: ChatProps) {
     return () => {
       cancelled = true;
     };
-  }, [activeThreadId]);
+  }, [activeThreadId, hasBootstrapped]);
 
-  const handleSelectProject = (projectId: string | null) => {
-    setActiveProject(projectId);
-  };
+  const handleSelectProject = useCallback(
+    (projectId: string | null) => {
+      setActiveProject(projectId);
+    },
+    [setActiveProject],
+  );
 
-  const handleCreateProject = async (name: string) => {
-    try {
-      const project = await projectsRepo.add({ name });
-      const generalThread = await threadsRepo.add({
-        projectId: project.id,
-        title: "General",
-      });
+  const handleCreateProject = useCallback(
+    async (name: string) => {
+      try {
+        const project = await projectsRepo.add({ name });
+        const generalThread = await threadsRepo.add({
+          projectId: project.id,
+          title: "General",
+        });
 
-      setProjects((prev) => sortByDate([...prev, project]));
-      setThreads([generalThread]);
-      setMessages([]);
-      setActiveProject(project.id);
-      setActiveThread(generalThread.id);
-    } catch (error) {
-      console.error("Failed to create project", error);
-    }
-  };
+        setProjects((prev) => sortByDate([...prev, project]));
+        setThreads([generalThread]);
+        setMessages([]);
+        setActiveProject(project.id);
+        setActiveThread(generalThread.id);
+      } catch (error) {
+        console.error("Failed to create project", error);
+      }
+    },
+    [setActiveProject, setActiveThread],
+  );
 
-  const handleCreateThread = async (title: string) => {
-    try {
-      const thread = await threadsRepo.add({
-        projectId: activeProjectId,
-        title,
-      });
+  const handleCreateThread = useCallback(
+    async (title: string) => {
+      try {
+        const thread = await threadsRepo.add({
+          projectId: getActiveProjectId(),
+          title,
+        });
 
-      setThreads((prev) => sortByDate([...prev, thread]));
-      setMessages([]);
-      setActiveThread(thread.id);
-    } catch (error) {
-      console.error("Failed to create thread", error);
-    }
-  };
+        setThreads((prev) => sortByDate([...prev, thread]));
+        setMessages([]);
+        setActiveThread(thread.id);
+      } catch (error) {
+        console.error("Failed to create thread", error);
+      }
+    },
+    [setActiveThread],
+  );
 
-  const handleSelectThread = (threadId: string) => {
-    setActiveThread(threadId);
-  };
+  const handleSelectThread = useCallback(
+    (threadId: string) => {
+      setActiveThread(threadId);
+    },
+    [setActiveThread],
+  );
 
-  const handleSendMessage = async (content: string) => {
-    if (!activeThreadId) {
+  const handleSendMessage = useCallback(
+    async (content: string) => {
+      if (!hasActiveContext) {
+        return;
+      }
+
+      const currentThreadId = getActiveThreadId();
+      if (!currentThreadId) {
+        return;
+      }
+
+      try {
+        setIsSending(true);
+        const message = await messagesRepo.add({
+          threadId: currentThreadId,
+          role: "user",
+          content,
+        });
+
+        setMessages((prev) => sortByDate([...prev, message]));
+
+        if (getActiveThreadId() !== currentThreadId) {
+          return;
+        }
+
+        const refreshed = await messagesRepo.findByThread(currentThreadId);
+
+        if (getActiveThreadId() !== currentThreadId) {
+          return;
+        }
+
+        const placeholder = createAssistantPlaceholder(currentThreadId);
+        setMessages(sortByDate([...refreshed, placeholder]));
+      } catch (error) {
+        console.error("Failed to send message", error);
+      } finally {
+        setIsSending(false);
+      }
+    },
+    [hasActiveContext],
+  );
+
+  useEffect(() => {
+    if (!hasBootstrapped) {
       return;
     }
 
-    try {
-      setIsSending(true);
-      const message = await messagesRepo.add({
-        threadId: activeThreadId,
-        role: "user",
-        content,
-      });
+    const handleShortcuts = (event: KeyboardEvent) => {
+      if (!event.ctrlKey) {
+        return;
+      }
 
-      setMessages((prev) => sortByDate([...prev, message]));
-    } catch (error) {
-      console.error("Failed to send message", error);
-    } finally {
-      setIsSending(false);
-    }
-  };
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+
+      if (event.shiftKey && key === "p") {
+        event.preventDefault();
+        const name = window.prompt(t("newProject"));
+        if (name && name.trim()) {
+          void handleCreateProject(name.trim());
+        }
+        return;
+      }
+
+      if (!event.shiftKey && key === "n") {
+        event.preventDefault();
+        const title = window.prompt(t("newThread"));
+        if (title && title.trim()) {
+          void handleCreateThread(title.trim());
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleShortcuts);
+    return () => window.removeEventListener("keydown", handleShortcuts);
+  }, [handleCreateProject, handleCreateThread, hasBootstrapped, t]);
 
   const composerDisabled = useMemo(
-    () => !activeThreadId || isSending || !isReady,
-    [activeThreadId, isSending, isReady],
+    () => !hasActiveContext || !activeThreadId || isSending,
+    [activeThreadId, hasActiveContext, isSending],
   );
 
-  if (!isReady) {
+  if (!hasBootstrapped) {
     return (
       <div className="flex flex-1 items-center justify-center">
-        <p className="text-sm text-slate-500">Cargando chat...</p>
+        <p className="text-sm text-slate-500">{t("loading")}</p>
       </div>
     );
   }
@@ -217,6 +336,7 @@ export default function Chat({ t }: ChatProps) {
       <SidebarProjects
         projects={projects}
         activeProjectId={activeProjectId}
+        isLoading={projectsLoading}
         onSelect={handleSelectProject}
         onCreate={handleCreateProject}
         t={t}
@@ -225,7 +345,8 @@ export default function Chat({ t }: ChatProps) {
         <ThreadList
           threads={threads}
           activeThreadId={activeThreadId}
-          hasActiveContext={isReady}
+          isLoading={threadsLoading}
+          hasActiveContext={hasActiveContext}
           onSelect={handleSelectThread}
           onCreate={handleCreateThread}
           t={t}
@@ -234,6 +355,7 @@ export default function Chat({ t }: ChatProps) {
           <ChatView
             messages={messages}
             hasActiveThread={Boolean(activeThreadId)}
+            isLoading={messagesLoading}
             t={t}
           />
           <ChatComposer

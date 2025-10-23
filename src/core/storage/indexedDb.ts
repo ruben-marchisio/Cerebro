@@ -21,7 +21,7 @@ export type ThreadRecord = {
 export type MessageRecord = {
   id: string;
   threadId: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string;
   createdAt: string;
 };

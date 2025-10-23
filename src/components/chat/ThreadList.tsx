@@ -8,6 +8,7 @@ type Translator = (key: TranslationKey) => string;
 type ThreadListProps = {
   threads: ThreadRecord[];
   activeThreadId: string | null;
+  isLoading: boolean;
   hasActiveContext: boolean;
   onSelect: (threadId: string) => void;
   onCreate: (title: string) => Promise<void> | void;
@@ -17,6 +18,7 @@ type ThreadListProps = {
 export default function ThreadList({
   threads,
   activeThreadId,
+  isLoading,
   hasActiveContext,
   onSelect,
   onCreate,
@@ -55,7 +57,9 @@ export default function ThreadList({
         </h2>
       </header>
       <div className="flex flex-1 flex-col gap-2 overflow-y-auto pr-1">
-        {hasActiveContext ? (
+        {isLoading ? (
+          <p className="text-xs text-slate-500">{t("loading")}</p>
+        ) : hasActiveContext ? (
           threads.length > 0 ? (
             threads.map((thread) => {
               const isActive = thread.id === activeThreadId;
@@ -77,12 +81,12 @@ export default function ThreadList({
             })
           ) : (
             <p className="text-xs text-slate-500">
-              {t("emptyThreadHelp")}
+              {t("emptyThreads")}
             </p>
           )
         ) : (
           <p className="text-xs text-slate-500">
-            {t("projectsTitle")}
+            {t("selectContext")}
           </p>
         )}
       </div>
@@ -92,12 +96,14 @@ export default function ThreadList({
           value={title}
           onChange={(event) => setTitle(event.target.value)}
           placeholder={t("newThread")}
-          disabled={!hasActiveContext}
+          disabled={!hasActiveContext || isLoading}
           className="rounded-lg border border-white/10 bg-slate-950/70 px-3 py-2 text-sm text-slate-200 outline-none transition disabled:opacity-60 focus:border-white/30"
         />
         <button
           type="submit"
-          disabled={!hasActiveContext || isSubmitting || !title.trim()}
+          disabled={
+            !hasActiveContext || isLoading || isSubmitting || !title.trim()
+          }
           className="rounded-lg bg-blue-500/80 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-blue-400/80 disabled:opacity-60"
         >
           {isSubmitting ? "..." : t("newThread")}
