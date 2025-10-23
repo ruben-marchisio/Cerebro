@@ -50,7 +50,10 @@ export default function Dashboard({ t }: DashboardProps) {
         ))}
       </section>
 
-      <div className="flex justify-center">
+      <div className="flex justify-center gap-3">
+        <Button onClick={() => navigate("/chat")}>
+          {t("openChat")}
+        </Button>
         <Button
           variant="secondary"
           onClick={() => navigate("/")}

@@ -11,6 +11,7 @@ import {
   translate,
 } from "./i18n";
 import Dashboard from "./pages/Dashboard";
+import Chat from "./pages/Chat";
 import { useUIStore } from "./store/uiStore";
 
 type Translator = (key: TranslationKey) => string;
@@ -39,8 +40,11 @@ function Home({ t }: PageProps) {
           >
             {t("primaryAction")}
           </Button>
-          <Button variant="secondary">
-            {t("secondaryAction")}
+          <Button
+            variant="secondary"
+            onClick={() => navigate("/chat")}
+          >
+            {t("openChat")}
           </Button>
         </div>
       </div>
@@ -122,6 +126,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Home t={t} />} />
             <Route path="/dashboard" element={<Dashboard t={t} />} />
+            <Route path="/chat" element={<Chat t={t} />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Home t={t} />} />
           </Routes>

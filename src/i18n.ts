@@ -35,7 +35,7 @@ const dictionaries = {
     appName: "CEREBRO",
     tagline: "Tu copiloto para automatizar flujos de desarrollo.",
     heroTitle: "Tu asistente de desarrollo en el escritorio",
-    heroSubtitle:
+  heroSubtitle:
       "Organiza tareas, lanza comandos y concentra el conocimiento de tu equipo en un panel elegante y oscuro.",
     primaryAction: "Abrir panel de control",
     secondaryAction: "Ver documentación",
@@ -46,6 +46,13 @@ const dictionaries = {
     dashboardSubtitle:
       "Explora tus flujos recientes, accesos directos y la actividad del equipo en un vistazo.",
     backHome: "Volver al inicio",
+    projectsTitle: "Proyectos",
+    newProject: "Nuevo proyecto",
+    newThread: "Nuevo hilo",
+    composerPlaceholder: "Escribe un mensaje...",
+    send: "Enviar",
+    emptyThreadHelp: "No hay mensajes en este hilo. Envía el primero para comenzar la conversación.",
+    openChat: "Abrir chat",
   },
   en: {
     appName: "CEREBRO",
@@ -62,6 +69,13 @@ const dictionaries = {
     dashboardSubtitle:
       "Review your recent flows, shortcuts, and team activity from a single place.",
     backHome: "Back to home",
+    projectsTitle: "Projects",
+    newProject: "New project",
+    newThread: "New thread",
+    composerPlaceholder: "Type a message...",
+    send: "Send",
+    emptyThreadHelp: "No messages in this thread yet. Send the first one to start the conversation.",
+    openChat: "Open chat",
   },
 } as const satisfies Record<Locale, Record<string, string>>;
 
