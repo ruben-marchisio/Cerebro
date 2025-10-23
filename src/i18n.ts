@@ -1,15 +1,13 @@
 export type Locale = "es" | "en";
 
-export const fallbackLocale: Locale = "en";
+export const availableLocales: Array<{ code: Locale; label: string }> = [
+  { code: "es", label: "ES" },
+  { code: "en", label: "EN" },
+];
 
-export const locales: Locale[] = ["es", "en"];
+export const fallbackLocale: Locale = "es";
 
-export const localeLabels: Record<Locale, string> = {
-  es: "ES",
-  en: "EN",
-};
-
-const baseTranslations = {
+const dictionaries = {
   es: {
     appName: "CEREBRO",
     tagline: "Tu copiloto para automatizar flujos de desarrollo.",
@@ -19,6 +17,8 @@ const baseTranslations = {
     primaryAction: "Abrir panel de control",
     secondaryAction: "Ver documentación",
     statusReady: "Listo",
+    topbarTitle: "Panel principal",
+    languageLabel: "Idioma",
   },
   en: {
     appName: "CEREBRO",
@@ -29,15 +29,20 @@ const baseTranslations = {
     primaryAction: "Open control center",
     secondaryAction: "View documentation",
     statusReady: "Ready",
+    topbarTitle: "Main dashboard",
+    languageLabel: "Language",
   },
-} as const;
+} as const satisfies Record<Locale, Record<string, string>>;
 
-export type TranslationSchema = (typeof baseTranslations)[Locale];
-export type TranslationKey = keyof TranslationSchema;
+type Dictionaries = typeof dictionaries;
 
-export const translations: Record<Locale, TranslationSchema> = baseTranslations;
+export type TranslationKey = keyof Dictionaries[Locale];
 
 export function translate(locale: Locale, key: TranslationKey): string {
-  const dictionary = translations[locale] ?? translations[fallbackLocale];
-  return dictionary[key] ?? translations[fallbackLocale][key];
+  const table = dictionaries[locale] ?? dictionaries[fallbackLocale];
+  return table[key] ?? dictionaries[fallbackLocale][key];
+}
+
+export function getLocaleLabel(locale: Locale): string {
+  return availableLocales.find((entry) => entry.code === locale)?.label ?? "";
 }
