@@ -1,0 +1,12 @@
+{
+  "identifier": "window",
+  "description": "Permisos para controlar la ventana principal",
+  "windows": ["main"],
+  "permissions": [
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize"
+  ]
+}

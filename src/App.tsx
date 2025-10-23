@@ -48,7 +48,10 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-screen flex-col bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-100">
-      <header className="drag-region flex items-center justify-between border-b border-white/5 bg-slate-900/80 px-4 py-2 backdrop-blur">
+      <header
+        className="drag-region flex items-center justify-between border-b border-white/5 bg-slate-900/80 px-4 py-2 backdrop-blur"
+        data-tauri-drag-region
+      >
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <div className="no-drag flex select-none flex-col leading-none">
             <span className="text-xs font-semibold uppercase tracking-[0.35em] text-slate-400">
