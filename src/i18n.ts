@@ -1,3 +1,5 @@
+import { getDefaultLanguage } from "./core/config/settings";
+
 export type Locale = "es" | "en";
 
 export const availableLocales: Array<{ code: Locale; label: string }> = [
@@ -5,7 +7,7 @@ export const availableLocales: Array<{ code: Locale; label: string }> = [
   { code: "en", label: "EN" },
 ];
 
-export const fallbackLocale: Locale = "es";
+export const fallbackLocale: Locale = getDefaultLanguage();
 
 export const localeStorageKey = "cerebro:locale";
 
@@ -47,6 +49,7 @@ const dictionaries = {
       "Explora tus flujos recientes, accesos directos y la actividad del equipo en un vistazo.",
     backHome: "Volver al inicio",
     projectsTitle: "Proyectos",
+    globalProject: "Global",
     newProject: "Nuevo proyecto",
     newThread: "Nuevo hilo",
     composerPlaceholder: "Escribe un mensaje...",
@@ -70,6 +73,7 @@ const dictionaries = {
       "Review your recent flows, shortcuts, and team activity from a single place.",
     backHome: "Back to home",
     projectsTitle: "Projects",
+    globalProject: "Global",
     newProject: "New project",
     newThread: "New thread",
     composerPlaceholder: "Type a message...",

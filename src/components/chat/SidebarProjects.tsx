@@ -1,6 +1,6 @@
 import { FormEvent, useState } from "react";
 
-import type { ProjectRecord } from "../../db";
+import type { ProjectRecord } from "../../core";
 import type { TranslationKey } from "../../i18n";
 
 type Translator = (key: TranslationKey) => string;
@@ -8,7 +8,7 @@ type Translator = (key: TranslationKey) => string;
 type SidebarProjectsProps = {
   projects: ProjectRecord[];
   activeProjectId: string | null;
-  onSelect: (projectId: string) => void;
+  onSelect: (projectId: string | null) => void;
   onCreate: (name: string) => Promise<void> | void;
   t: Translator;
 };
@@ -47,6 +47,18 @@ export default function SidebarProjects({
         </h2>
       </header>
       <nav className="flex flex-1 flex-col gap-2 overflow-y-auto pr-1">
+        <button
+          type="button"
+          onClick={() => onSelect(null)}
+          className={[
+            "rounded-lg px-3 py-2 text-left text-sm font-medium transition",
+            activeProjectId === null
+              ? "bg-blue-500/20 text-blue-100"
+              : "bg-white/5 text-slate-200 hover:bg-white/10",
+          ].join(" ")}
+        >
+          <span className="block truncate">{t("globalProject")}</span>
+        </button>
         {projects.map((project) => {
           const isActive = project.id === activeProjectId;
           return (

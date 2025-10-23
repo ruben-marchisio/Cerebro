@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 
-import type { ThreadRecord } from "../../db";
+import type { ThreadRecord } from "../../core";
 import type { TranslationKey } from "../../i18n";
 
 type Translator = (key: TranslationKey) => string;
@@ -8,7 +8,7 @@ type Translator = (key: TranslationKey) => string;
 type ThreadListProps = {
   threads: ThreadRecord[];
   activeThreadId: string | null;
-  hasActiveProject: boolean;
+  hasActiveContext: boolean;
   onSelect: (threadId: string) => void;
   onCreate: (title: string) => Promise<void> | void;
   t: Translator;
@@ -17,7 +17,7 @@ type ThreadListProps = {
 export default function ThreadList({
   threads,
   activeThreadId,
-  hasActiveProject,
+  hasActiveContext,
   onSelect,
   onCreate,
   t,
@@ -26,15 +26,15 @@ export default function ThreadList({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
-    if (!hasActiveProject) {
+    if (!hasActiveContext) {
       setTitle("");
     }
-  }, [hasActiveProject]);
+  }, [hasActiveContext]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const trimmed = title.trim();
-    if (!trimmed || !hasActiveProject) {
+    if (!trimmed || !hasActiveContext) {
       return;
     }
 
@@ -55,7 +55,7 @@ export default function ThreadList({
         </h2>
       </header>
       <div className="flex flex-1 flex-col gap-2 overflow-y-auto pr-1">
-        {hasActiveProject ? (
+        {hasActiveContext ? (
           threads.length > 0 ? (
             threads.map((thread) => {
               const isActive = thread.id === activeThreadId;
@@ -92,12 +92,12 @@ export default function ThreadList({
           value={title}
           onChange={(event) => setTitle(event.target.value)}
           placeholder={t("newThread")}
-          disabled={!hasActiveProject}
+          disabled={!hasActiveContext}
           className="rounded-lg border border-white/10 bg-slate-950/70 px-3 py-2 text-sm text-slate-200 outline-none transition disabled:opacity-60 focus:border-white/30"
         />
         <button
           type="submit"
-          disabled={!hasActiveProject || isSubmitting || !title.trim()}
+          disabled={!hasActiveContext || isSubmitting || !title.trim()}
           className="rounded-lg bg-blue-500/80 px-3 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-blue-400/80 disabled:opacity-60"
         >
           {isSubmitting ? "..." : t("newThread")}

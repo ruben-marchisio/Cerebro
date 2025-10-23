@@ -1,18 +1,20 @@
 import {
+  deleteRecord,
   getAllFromStore,
   getOneByKey,
   PROJECTS_STORE,
   ProjectRecord,
   putRecord,
   runTransaction,
-  deleteRecord,
-} from "./index";
+} from "../storage/indexedDb";
 
 export type CreateProjectInput = {
   name: string;
 };
 
-export type UpdateProjectInput = Partial<Omit<ProjectRecord, "id" | "createdAt">>;
+export type UpdateProjectInput = Partial<
+  Omit<ProjectRecord, "id" | "createdAt">
+>;
 
 const generateId = (): string => {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {

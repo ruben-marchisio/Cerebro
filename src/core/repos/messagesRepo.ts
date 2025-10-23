@@ -1,10 +1,10 @@
 import {
   getByIndex,
-  putRecord,
-  runTransaction,
   MESSAGES_STORE,
   MessageRecord,
-} from "./index";
+  putRecord,
+  runTransaction,
+} from "../storage/indexedDb";
 
 export type CreateMessageInput = {
   threadId: string;

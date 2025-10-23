@@ -13,7 +13,7 @@ export type ProjectRecord = {
 
 export type ThreadRecord = {
   id: string;
-  projectId: string;
+  projectId: string | null;
   title: string;
   createdAt: string;
 };
@@ -80,7 +80,9 @@ export const initDB = (): Promise<IDBDatabase> => {
       };
 
       request.onblocked = () => {
-        reject(new Error("IndexedDB upgrade blocked by another connection"));
+        reject(
+          new Error("IndexedDB upgrade blocked by another connection"),
+        );
       };
     });
   }
@@ -169,7 +171,3 @@ export const deleteRecord = async (store: IDBObjectStore, key: IDBValidKey) => {
   const request = store.delete(key);
   await wrapRequest(request);
 };
-
-export * as projectsRepo from "./projectsRepo";
-export * as threadsRepo from "./threadsRepo";
-export * as messagesRepo from "./messagesRepo";

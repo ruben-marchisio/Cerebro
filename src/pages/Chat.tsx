@@ -12,7 +12,7 @@ import {
   projectsRepo,
   ThreadRecord,
   threadsRepo,
-} from "../db";
+} from "../core";
 import {
   getActiveProjectId,
   getActiveThreadId,
@@ -73,12 +73,6 @@ export default function Chat({ t }: ChatProps) {
   }, [setActiveProject]);
 
   useEffect(() => {
-    if (!activeProjectId) {
-      setThreads([]);
-      setMessages([]);
-      return;
-    }
-
     let cancelled = false;
 
     const fetchThreads = async () => {
@@ -143,7 +137,7 @@ export default function Chat({ t }: ChatProps) {
     };
   }, [activeThreadId]);
 
-  const handleSelectProject = (projectId: string) => {
+  const handleSelectProject = (projectId: string | null) => {
     setActiveProject(projectId);
   };
 
@@ -166,10 +160,6 @@ export default function Chat({ t }: ChatProps) {
   };
 
   const handleCreateThread = async (title: string) => {
-    if (!activeProjectId) {
-      return;
-    }
-
     try {
       const thread = await threadsRepo.add({
         projectId: activeProjectId,
@@ -235,7 +225,7 @@ export default function Chat({ t }: ChatProps) {
         <ThreadList
           threads={threads}
           activeThreadId={activeThreadId}
-          hasActiveProject={Boolean(activeProjectId)}
+          hasActiveContext={isReady}
           onSelect={handleSelectThread}
           onCreate={handleCreateThread}
           t={t}

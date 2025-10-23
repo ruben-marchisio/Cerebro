@@ -1,15 +1,16 @@
 import {
+  deleteRecord,
+  getAllFromStore,
   getByIndex,
   getOneByKey,
   putRecord,
   runTransaction,
   THREADS_STORE,
   ThreadRecord,
-  deleteRecord,
-} from "./index";
+} from "../storage/indexedDb";
 
 export type CreateThreadInput = {
-  projectId: string;
+  projectId: string | null;
   title: string;
 };
 
@@ -27,7 +28,7 @@ const generateId = (): string => {
 
 const withMetadata = (payload: CreateThreadInput): ThreadRecord => ({
   id: generateId(),
-  projectId: payload.projectId,
+  projectId: payload.projectId ?? null,
   title: payload.title,
   createdAt: new Date().toISOString(),
 });
@@ -48,9 +49,16 @@ export const add = async (
 };
 
 export const findByProject = async (
-  projectId: string,
+  projectId: string | null,
 ): Promise<ThreadRecord[]> =>
   runTransaction<ThreadRecord[]>(THREADS_STORE, "readonly", async (store) => {
+    if (projectId === null) {
+      const records = await getAllFromStore<ThreadRecord>(store);
+      return records
+        .filter((thread) => thread.projectId === null)
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    }
+
     const records = await getByIndex<ThreadRecord>(
       store,
       "by_project",

@@ -1,4 +1,4 @@
-import type { MessageRecord } from "../../db";
+import type { MessageRecord } from "../../core";
 import type { TranslationKey } from "../../i18n";
 
 type Translator = (key: TranslationKey) => string;
