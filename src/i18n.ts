@@ -7,6 +7,29 @@ export const availableLocales: Array<{ code: Locale; label: string }> = [
 
 export const fallbackLocale: Locale = "es";
 
+export const localeStorageKey = "cerebro:locale";
+
+export const isLocale = (value: string): value is Locale =>
+  availableLocales.some((item) => item.code === value);
+
+export const resolveInitialLocale = (): Locale => {
+  if (typeof window === "undefined") {
+    return fallbackLocale;
+  }
+
+  const stored = window.localStorage.getItem(localeStorageKey);
+  if (stored && isLocale(stored)) {
+    return stored;
+  }
+
+  const browserLang = window.navigator.language?.slice(0, 2).toLowerCase();
+  if (browserLang && isLocale(browserLang)) {
+    return browserLang;
+  }
+
+  return fallbackLocale;
+};
+
 const dictionaries = {
   es: {
     appName: "CEREBRO",
@@ -19,6 +42,10 @@ const dictionaries = {
     statusReady: "Listo",
     topbarTitle: "Panel principal",
     languageLabel: "Idioma",
+    dashboardTitle: "Panel principal",
+    dashboardSubtitle:
+      "Explora tus flujos recientes, accesos directos y la actividad del equipo en un vistazo.",
+    backHome: "Volver al inicio",
   },
   en: {
     appName: "CEREBRO",
@@ -31,6 +58,10 @@ const dictionaries = {
     statusReady: "Ready",
     topbarTitle: "Main dashboard",
     languageLabel: "Language",
+    dashboardTitle: "Main dashboard",
+    dashboardSubtitle:
+      "Review your recent flows, shortcuts, and team activity from a single place.",
+    backHome: "Back to home",
   },
 } as const satisfies Record<Locale, Record<string, string>>;
 
