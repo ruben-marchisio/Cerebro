@@ -26,6 +26,12 @@ type OllamaTagsResponse = {
   }>;
 };
 
+type OllamaRequestOptions = {
+  num_predict?: number;
+  temperature?: number;
+  num_ctx?: number;
+};
+
 export class OllamaModelMissingError extends Error {
   readonly model: string;
 
@@ -46,6 +52,22 @@ const isAbortError = (error: unknown): boolean => {
 
 const normalizeBaseUrl = (url: string): string =>
   url.endsWith("/") ? url.slice(0, -1) : url;
+
+const getTunedOptionsForModel = (
+  model: string,
+): OllamaRequestOptions | undefined => {
+  const normalized = model.trim().toLowerCase();
+
+  if (normalized.startsWith("llama3.2:3b")) {
+    return {
+      num_predict: 512,
+      temperature: 0.7,
+      num_ctx: 2048,
+    };
+  }
+
+  return undefined;
+};
 
 const linkAbortSignals = (
   controller: AbortController,
@@ -203,11 +225,14 @@ export const createOllamaProvider = ({
 
       await ensureModelIsAvailable(resolvedModel, controller.signal);
 
+      const tunedOptions = getTunedOptionsForModel(resolvedModel);
+
       const bodyPayload = {
         model: resolvedModel,
         prompt,
         stream: true,
         system: system?.trim() || undefined,
+        options: tunedOptions ?? undefined,
       };
 
       let response: Response;

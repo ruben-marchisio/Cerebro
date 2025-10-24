@@ -46,6 +46,8 @@ type ChatMessage = MessageRecord & {
   pending?: boolean;
 };
 
+type AssistantLanguage = "es" | "en";
+
 const sortByDate = <T extends { createdAt: string }>(collection: T[]): T[] =>
   [...collection].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
@@ -61,24 +63,144 @@ const createAssistantPlaceholder = (threadId: string): ChatMessage => ({
 const isAbortError = (error: unknown): boolean =>
   error instanceof DOMException && error.name === "AbortError";
 
-const formatPromptFromMessages = (records: MessageRecord[]): string => {
-  if (records.length === 0) {
-    return "";
+const SPANISH_HINTS = [
+  "¿",
+  "¡",
+  "ñ",
+  " á",
+  " é",
+  " í",
+  " ó",
+  " ú",
+  "hola",
+  "gracias",
+  "código",
+  "ejemplo",
+  "por qué",
+  "necesito",
+  "quiero",
+  "debería",
+  "ayuda",
+  "configura",
+];
+
+const ENGLISH_HINTS = [
+  "hello",
+  "thanks",
+  "please",
+  "code",
+  "example",
+  "why",
+  "need",
+  "should",
+  "help",
+  "configure",
+  "what",
+  "how",
+  "could",
+  "would",
+];
+
+const sanitizeContent = (input: string): string =>
+  input.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+
+const detectLanguageFromContent = (content: string): AssistantLanguage => {
+  const raw = content.trim();
+  if (!raw) {
+    return "es";
   }
 
-  const history = records
+  const normalized = sanitizeContent(raw);
+  let spanishScore = 0;
+  let englishScore = 0;
+
+  for (const hint of SPANISH_HINTS) {
+    if (normalized.includes(sanitizeContent(hint))) {
+      spanishScore += 2;
+    }
+  }
+
+  for (const hint of ENGLISH_HINTS) {
+    if (normalized.includes(sanitizeContent(hint))) {
+      englishScore += 2;
+    }
+  }
+
+  const characters = raw.split("");
+  for (const char of characters) {
+    if ("¿¡áéíóúñÁÉÍÓÚÑ".includes(char)) {
+      spanishScore += 1;
+    }
+  }
+
+  return spanishScore >= englishScore ? "es" : "en";
+};
+
+const detectAssistantLanguage = (
+  records: MessageRecord[],
+): AssistantLanguage => {
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const entry = records[index];
+    if (entry.role === "user") {
+      return detectLanguageFromContent(entry.content);
+    }
+  }
+  return "es";
+};
+
+const buildSystemPrompt = (language: AssistantLanguage): string => {
+  if (language === "en") {
+    return [
+      "You are Cerebro, a warm front-end partner—keep answers coherent, concise, and entirely in English.",
+      "Use light Markdown with a short intro, a compact bullet list of actions, and a one-line wrap-up without long sections.",
+      "When the user starts a new topic, ignore earlier context and focus only on the latest request while staying practical.",
+    ].join("\n");
+  }
+
+  return [
+    "Eres Cerebro, un aliado front-end cercano: responde siempre en español neutro con mensajes breves y claros.",
+    "Usa Markdown ligero con una introducción corta, lista comprimida de acciones y cierre en una sola frase, sin secciones extensas.",
+    "Si el usuario cambia de tema, deja atrás el historial y atiende solo la solicitud más reciente con recomendaciones útiles.",
+  ].join("\n");
+};
+
+const formatPromptFromMessages = (
+  records: MessageRecord[],
+  {
+    language,
+    maxMessages,
+  }: {
+    language: AssistantLanguage;
+    maxMessages?: number;
+  },
+): { prompt: string; history: MessageRecord[] } => {
+  if (records.length === 0) {
+    return { prompt: "", history: [] };
+  }
+
+  const relevantRecords =
+    typeof maxMessages === "number" && maxMessages > 0
+      ? records.slice(-maxMessages)
+      : records;
+
+  const roleLabels =
+    language === "en"
+      ? { assistant: "Assistant", system: "System", user: "User" }
+      : { assistant: "Asistente", system: "Sistema", user: "Usuario" };
+
+  const historyText = relevantRecords
     .map((message) => {
-      const roleLabel =
-        message.role === "assistant"
-          ? "Assistant"
-          : message.role === "system"
-            ? "System"
-            : "User";
-      return `${roleLabel}: ${message.content}`;
+      const label = roleLabels[message.role as keyof typeof roleLabels] ?? "User";
+      return `${label}: ${message.content}`;
     })
     .join("\n\n");
 
-  return `${history}\n\nAssistant:`;
+  const prompt = `${historyText}\n\n${roleLabels.assistant}:`;
+
+  return {
+    prompt,
+    history: relevantRecords,
+  };
 };
 
 export default function Chat({ t }: ChatProps) {
@@ -96,6 +218,7 @@ export default function Chat({ t }: ChatProps) {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimeoutRef = useRef<number | null>(null);
   const providerRef = useRef<StreamingProvider | null>(null);
+  const previousThreadIdRef = useRef<string | null>(null);
   const [runtimeMode, setRuntimeMode] = useState<RuntimeStatus>("none");
   const [providerReady, setProviderReady] = useState(false);
   const [missingModelProfileId, setMissingModelProfileId] = useState<
@@ -289,15 +412,22 @@ export default function Chat({ t }: ChatProps) {
     }
 
     if (!activeThreadId) {
+      previousThreadIdRef.current = null;
       setMessages([]);
       setMessagesLoading(false);
       return;
     }
 
+    const threadChanged = previousThreadIdRef.current !== activeThreadId;
+    previousThreadIdRef.current = activeThreadId;
+
     let cancelled = false;
 
     const fetchMessages = async () => {
       try {
+        if (threadChanged) {
+          setMessages([]);
+        }
         setMessagesLoading(true);
         const threadMessages = await messagesRepo.findByThread(activeThreadId);
         if (cancelled) {
@@ -406,14 +536,21 @@ export default function Chat({ t }: ChatProps) {
         return;
       }
 
-      const providerMessages: ProviderMessage[] = baseMessages.map(
-        (message) => ({
-          role: message.role,
-          content: message.content,
-        }),
-      );
+      const assistantLanguage = detectAssistantLanguage(baseMessages);
+      const shouldLimitHistory =
+        runtimeMode === "local" && selectedModelId === "fast";
 
-      const prompt = formatPromptFromMessages(baseMessages);
+      const { prompt, history } = formatPromptFromMessages(baseMessages, {
+        language: assistantLanguage,
+        maxMessages: shouldLimitHistory ? 8 : undefined,
+      });
+
+      const providerMessages: ProviderMessage[] = history.map((message) => ({
+        role: message.role,
+        content: message.content,
+      }));
+
+      const systemPrompt = buildSystemPrompt(assistantLanguage);
 
       let completion: CompletionHandle;
 
@@ -421,6 +558,7 @@ export default function Chat({ t }: ChatProps) {
         completion = provider.complete({
           prompt,
           model: runtimeMode === "remote" ? remoteModelName : localModelName,
+          system: systemPrompt,
           messages: providerMessages,
           onToken: (token) => {
             if (getActiveThreadId() !== threadId) {
