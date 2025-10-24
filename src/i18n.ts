@@ -58,6 +58,23 @@ const dictionaries = {
     modelLabel: "Modelo",
     modelUnavailable:
       "El modelo avanzado no está disponible con la configuración actual.",
+    modelFastUnavailable: "El perfil Rápido no está disponible en tu máquina.",
+    modelSwitchToBalanced: "Cambiar a Equilibrado",
+    modelProfileFastLabel: "⚡ Rápido",
+    modelProfileFastDescription:
+      "Respuestas ágiles para iterar ideas y tareas cortas.",
+    modelProfileBalancedLabel: "🎯 Equilibrado",
+    modelProfileBalancedDescription:
+      "Equilibrio entre velocidad y contexto para trabajo diario.",
+    modelProfileThoughtfulLabel: "🧩 Pensativo",
+    modelProfileThoughtfulDescription:
+      "Más espacio para razonamientos y respuestas extensas.",
+    modelProfileDeepseek13Label: "deepseek-1.3",
+    modelProfileDeepseek13Description:
+      "Modelo remoto estándar de DeepSeek para uso general.",
+    modelProfileDeepseek67Label: "deepseek-6.7",
+    modelProfileDeepseek67Description:
+      "Modelo de razonamiento avanzado de DeepSeek (requiere clave).",
     completionError: "No se pudo completar la respuesta del asistente.",
     runtimeLocal: "Local (Ollama)",
     runtimeRemote: "Remoto (DeepSeek)",
@@ -101,6 +118,23 @@ const dictionaries = {
     modelLabel: "Model",
     modelUnavailable:
       "Advanced model is not available with the current configuration.",
+    modelFastUnavailable: "The Fast profile is unavailable on your machine.",
+    modelSwitchToBalanced: "Switch to Balanced",
+    modelProfileFastLabel: "⚡ Fast",
+    modelProfileFastDescription:
+      "Snappy answers to iterate on ideas and short tasks.",
+    modelProfileBalancedLabel: "🎯 Balanced",
+    modelProfileBalancedDescription:
+      "Balanced speed and context for everyday work.",
+    modelProfileThoughtfulLabel: "🧩 Thoughtful",
+    modelProfileThoughtfulDescription:
+      "Gives the model more room for reasoning and long replies.",
+    modelProfileDeepseek13Label: "deepseek-1.3",
+    modelProfileDeepseek13Description:
+      "DeepSeek remote default model for general usage.",
+    modelProfileDeepseek67Label: "deepseek-6.7",
+    modelProfileDeepseek67Description:
+      "DeepSeek advanced reasoning model (API key required).",
     completionError: "Assistant response could not be completed.",
     runtimeLocal: "Local (Ollama)",
     runtimeRemote: "Remote (DeepSeek)",

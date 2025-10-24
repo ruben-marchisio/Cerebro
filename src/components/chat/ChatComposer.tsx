@@ -1,6 +1,12 @@
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useState } from "react";
 
 import { getEnv } from "../../core";
+import type { RuntimeStatus } from "../../core/ai";
+import {
+  getDefaultProfileIdForRuntime,
+  getModelProfilesByRuntime,
+  type ModelRuntime,
+} from "../../core/ai/modelProfiles";
 import type { TranslationKey } from "../../i18n";
 import { useSettingsStore } from "../../store/settingsStore";
 
@@ -11,6 +17,8 @@ type ChatComposerProps = {
   isStreaming: boolean;
   onAbort: () => void;
   onSend: (content: string) => Promise<void> | void;
+  runtime: RuntimeStatus;
+  missingProfileId?: string | null;
   t: Translator;
 };
 
@@ -19,6 +27,8 @@ export default function ChatComposer({
   isStreaming,
   onAbort,
   onSend,
+  runtime,
+  missingProfileId = null,
   t,
 }: ChatComposerProps) {
   const [message, setMessage] = useState("");
@@ -32,23 +42,79 @@ export default function ChatComposer({
     [deepseekApiKey],
   );
 
-  useEffect(() => {
-    if (!canUseAdvancedModel && model === "deepseek-6.7") {
-      void updateModel("deepseek-1.3");
-    }
-  }, [canUseAdvancedModel, model, updateModel]);
+  const runtimeCategory: ModelRuntime =
+    runtime === "local" ? "local" : "remote";
 
-  const models = useMemo(
-    () => [
-      { value: "deepseek-1.3", label: "deepseek-1.3", disabled: false },
-      {
-        value: "deepseek-6.7",
-        label: "deepseek-6.7",
-        disabled: !canUseAdvancedModel,
-      },
-    ],
-    [canUseAdvancedModel],
+  const { profiles, disabledProfileIds } = useMemo(() => {
+    const available = getModelProfilesByRuntime(runtimeCategory);
+
+    if (runtimeCategory !== "remote") {
+      return {
+        profiles: available,
+        disabledProfileIds: new Set<string>(),
+      };
+    }
+
+    if (canUseAdvancedModel) {
+      return {
+        profiles: available,
+        disabledProfileIds: new Set<string>(),
+      };
+    }
+
+    const disabled = new Set<string>(
+      available
+        .filter((profile) => profile.requiresAdvanced)
+        .map((profile) => profile.id),
+    );
+
+    return {
+      profiles: available,
+      disabledProfileIds: disabled,
+    };
+  }, [canUseAdvancedModel, runtimeCategory]);
+
+  const selectedProfile = useMemo(
+    () =>
+      profiles.find(
+        (profile) =>
+          profile.id === model && !disabledProfileIds.has(profile.id),
+      ),
+    [model, profiles, disabledProfileIds],
   );
+
+  useEffect(() => {
+    if (!profiles.length) {
+      return;
+    }
+
+    const isDisabled = disabledProfileIds.has(model);
+    if (selectedProfile && !isDisabled) {
+      return;
+    }
+
+    const preferredId = getDefaultProfileIdForRuntime(runtimeCategory);
+    const preferredProfile = profiles.find(
+      (profile) =>
+        profile.id === preferredId && !disabledProfileIds.has(profile.id),
+    );
+
+    const fallbackProfile =
+      preferredProfile ??
+      profiles.find((profile) => !disabledProfileIds.has(profile.id)) ??
+      profiles[0];
+
+    if (fallbackProfile && fallbackProfile.id !== model) {
+      void updateModel(fallbackProfile.id);
+    }
+  }, [
+    disabledProfileIds,
+    model,
+    profiles,
+    runtimeCategory,
+    selectedProfile,
+    updateModel,
+  ]);
 
   const resetComposer = () => {
     setMessage("");
@@ -102,33 +168,87 @@ export default function ChatComposer({
         onKeyDown={handleKeyDown}
         className="min-h-[88px] w-full resize-none rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm text-slate-200 outline-none transition disabled:opacity-60 focus:border-white/30"
       />
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2 text-xs text-slate-400">
-          <label htmlFor="model-selector" className="font-semibold uppercase tracking-[0.3em]">
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="flex flex-col gap-2 text-xs text-slate-400">
+          <span className="font-semibold uppercase tracking-[0.3em] text-slate-300">
             {t("modelLabel")}
-          </label>
-          <select
-            id="model-selector"
-            value={model}
-            onChange={(event) => {
-              const next = event.target.value;
-              if (!canUseAdvancedModel && next === "deepseek-6.7") {
-                return;
-              }
-              void updateModel(next);
-            }}
-            className="rounded-lg border border-white/10 bg-slate-950/80 px-3 py-1 text-xs text-slate-200 outline-none transition hover:border-white/30 focus:border-white/40 disabled:opacity-60"
-          >
-            {models.map((option) => (
-              <option
-                key={option.value}
-                value={option.value}
-                disabled={option.disabled}
+          </span>
+          <div className="flex flex-wrap gap-2">
+            {profiles.map((profile) => {
+              const isDisabled = disabledProfileIds.has(profile.id);
+              const isActive = profile.id === model && !isDisabled;
+              const highlightMissing =
+                !isDisabled && missingProfileId === profile.id;
+              const baseClasses =
+                "flex items-center gap-1 rounded-xl border px-3 py-1 text-xs transition focus:outline-none focus:ring-1 focus:ring-blue-300/60";
+              const visualClasses = highlightMissing
+                ? "border-red-400/60 bg-red-500/20 text-red-100"
+                : isActive
+                  ? "border-blue-300/60 bg-blue-500/15 text-blue-100"
+                  : "border-white/10 bg-slate-950/60 text-slate-300";
+              const hoverClasses =
+                !highlightMissing && !isActive && !isDisabled
+                  ? "hover:border-white/20 hover:text-slate-100"
+                  : "";
+              const stateClasses = isDisabled
+                ? "cursor-not-allowed opacity-60"
+                : "cursor-pointer";
+              const buttonClasses = [
+                baseClasses,
+                visualClasses,
+                hoverClasses,
+                stateClasses,
+              ]
+                .filter(Boolean)
+                .join(" ");
+
+              return (
+                <button
+                  key={profile.id}
+                  type="button"
+                  className={buttonClasses}
+                  onClick={() => {
+                    if (isDisabled || profile.id === model) {
+                      return;
+                    }
+                    void updateModel(profile.id);
+                  }}
+                  disabled={isDisabled}
+                  aria-pressed={isActive}
+                >
+                  {profile.icon ? <span>{profile.icon}</span> : null}
+                  <span>{t(profile.label)}</span>
+                </button>
+              );
+            })}
+          </div>
+          {missingProfileId === "fast" && (
+            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-red-400/40 bg-red-500/10 px-3 py-2 text-[11px] text-red-100">
+              <span>{t("modelFastUnavailable")}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  void updateModel("balanced");
+                }}
+                className="rounded-lg border border-red-300/50 bg-red-500/30 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.25em] text-red-50 transition hover:bg-red-500/40"
               >
-                {option.label}
-              </option>
-            ))}
-          </select>
+                {t("modelSwitchToBalanced")}
+              </button>
+            </div>
+          )}
+          {selectedProfile && (
+            <p className="text-[11px] text-slate-400">
+              {selectedProfile.icon ? (
+                <span className="mr-1 align-middle">{selectedProfile.icon}</span>
+              ) : null}
+              {t(selectedProfile.description)}
+            </p>
+          )}
+          {runtimeCategory === "remote" && !canUseAdvancedModel && (
+            <p className="text-[11px] text-slate-500">
+              {t("modelUnavailable")}
+            </p>
+          )}
         </div>
         <div className="ml-auto flex items-center gap-2">
           {isStreaming && (
@@ -149,11 +269,6 @@ export default function ChatComposer({
           </button>
         </div>
       </div>
-      {!canUseAdvancedModel && (
-        <p className="text-xs text-slate-500">
-          {t("modelUnavailable")}
-        </p>
-      )}
     </form>
   );
 }

@@ -20,6 +20,11 @@ import {
   type StreamingProvider,
   type CompletionHandle,
 } from "../core";
+import { OllamaModelMissingError } from "../core/ai/providers/local/ollama";
+import {
+  getDefaultProfileIdForRuntime,
+  getModelProfileById,
+} from "../core/ai/modelProfiles";
 import {
   getActiveProjectId,
   getActiveThreadId,
@@ -93,12 +98,54 @@ export default function Chat({ t }: ChatProps) {
   const providerRef = useRef<StreamingProvider | null>(null);
   const [runtimeMode, setRuntimeMode] = useState<RuntimeStatus>("none");
   const [providerReady, setProviderReady] = useState(false);
+  const [missingModelProfileId, setMissingModelProfileId] = useState<
+    string | null
+  >(null);
 
   const activeProjectId = useChatStore((state) => state.activeProjectId);
   const activeThreadId = useChatStore((state) => state.activeThreadId);
   const setActiveProject = useChatStore((state) => state.setActiveProject);
   const setActiveThread = useChatStore((state) => state.setActiveThread);
-  const selectedModel = useSettingsStore((state) => state.settings.model);
+  const selectedModelId = useSettingsStore(
+    (state) => state.settings.model,
+  );
+
+  const selectedModelProfile = useMemo(
+    () => getModelProfileById(selectedModelId),
+    [selectedModelId],
+  );
+
+  const remoteModelName = useMemo(() => {
+    if (runtimeMode !== "remote") {
+      return undefined;
+    }
+
+    if (selectedModelProfile?.runtime === "remote") {
+      return selectedModelProfile.model;
+    }
+
+    const fallbackProfile = getModelProfileById(
+      getDefaultProfileIdForRuntime("remote"),
+    );
+
+    return fallbackProfile?.model ?? "deepseek-1.3";
+  }, [runtimeMode, selectedModelProfile]);
+
+  const localModelName = useMemo(() => {
+    if (runtimeMode !== "local") {
+      return undefined;
+    }
+
+    if (selectedModelProfile?.runtime === "local") {
+      return selectedModelProfile.model;
+    }
+
+    const fallbackProfile = getModelProfileById(
+      getDefaultProfileIdForRuntime("local"),
+    );
+
+    return fallbackProfile?.model;
+  }, [runtimeMode, selectedModelProfile]);
 
   const showToast = useCallback((message: string) => {
     if (toastTimeoutRef.current) {
@@ -329,7 +376,9 @@ export default function Chat({ t }: ChatProps) {
   const startCompletion = useCallback(
     (threadId: string, placeholder: ChatMessage, baseMessages: MessageRecord[]) => {
       console.log("[chat] requesting completion", {
-        model: selectedModel,
+        profileId: selectedModelId,
+        runtimeMode,
+        model: runtimeMode === "remote" ? remoteModelName : localModelName,
         threadId,
       });
 
@@ -371,7 +420,7 @@ export default function Chat({ t }: ChatProps) {
       try {
         completion = provider.complete({
           prompt,
-          model: runtimeMode === "remote" ? selectedModel : undefined,
+          model: runtimeMode === "remote" ? remoteModelName : localModelName,
           messages: providerMessages,
           onToken: (token) => {
             if (getActiveThreadId() !== threadId) {
@@ -408,6 +457,7 @@ export default function Chat({ t }: ChatProps) {
       completion.response
         .then(async (finalText) => {
           console.log("[chat] completion received");
+          setMissingModelProfileId(null);
           if (getActiveThreadId() !== threadId) {
             return;
           }
@@ -433,6 +483,11 @@ export default function Chat({ t }: ChatProps) {
         .catch((error) => {
           if (isAbortError(error)) {
             console.log("[chat] completion aborted");
+          } else if (error instanceof OllamaModelMissingError) {
+            if (runtimeMode === "local" && selectedModelId) {
+              setMissingModelProfileId(selectedModelId);
+            }
+            showToast(error.message);
           } else {
             console.error("Failed to complete assistant message", error);
             const message =
@@ -455,7 +510,15 @@ export default function Chat({ t }: ChatProps) {
           setCompletionController(null);
         });
     },
-    [runtimeMode, selectedModel, showToast, t],
+    [
+      remoteModelName,
+      runtimeMode,
+      selectedModelId,
+      showToast,
+      t,
+      localModelName,
+      setMissingModelProfileId,
+    ],
   );
 
   const handleSendMessage = useCallback(
@@ -508,6 +571,24 @@ export default function Chat({ t }: ChatProps) {
       completionController.abort();
     }
   }, [completionController]);
+
+  useEffect(() => {
+    if (!missingModelProfileId) {
+      return;
+    }
+
+    if (
+      runtimeMode !== "local" ||
+      selectedModelId !== missingModelProfileId
+    ) {
+      setMissingModelProfileId(null);
+    }
+  }, [
+    missingModelProfileId,
+    runtimeMode,
+    selectedModelId,
+    setMissingModelProfileId,
+  ]);
 
   useEffect(() => {
     if (!hasBootstrapped) {
@@ -627,6 +708,8 @@ export default function Chat({ t }: ChatProps) {
               isStreaming={isStreaming}
               onAbort={handleAbort}
               onSend={handleSendMessage}
+              runtime={runtimeMode}
+              missingProfileId={missingModelProfileId}
               t={t}
             />
           </div>

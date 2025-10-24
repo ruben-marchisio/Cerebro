@@ -6,6 +6,7 @@ import type {
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:11434";
 const GENERATE_ENDPOINT = "/api/generate";
+const TAGS_ENDPOINT = "/api/tags";
 
 type OllamaProviderOptions = {
   baseURL?: string;
@@ -17,6 +18,25 @@ type OllamaResponseChunk = {
   done?: boolean;
   error?: string;
 };
+
+type OllamaTagsResponse = {
+  models?: Array<{
+    name?: string;
+    model?: string;
+  }>;
+};
+
+export class OllamaModelMissingError extends Error {
+  readonly model: string;
+
+  constructor(model: string) {
+    super(
+      `No tenés este modelo. Ejecutá: ollama pull ${model} o elegí otro perfil.`,
+    );
+    this.name = "OllamaModelMissingError";
+    this.model = model;
+  }
+}
 
 const isAbortError = (error: unknown): boolean => {
   return (
@@ -81,6 +101,82 @@ export const createOllamaProvider = ({
     );
   }
 
+  const ensureModelIsAvailable = async (
+    modelName: string,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    let response: Response;
+    try {
+      response = await fetch(`${preparedBase}${TAGS_ENDPOINT}`, {
+        method: "GET",
+        signal,
+      });
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
+
+      throw new Error(
+        normalizeErrorMessage(
+          "No se pudo conectar con Ollama. Verifica que el servicio esté en ejecución (`ollama serve`)",
+          error instanceof Error ? error.message : null,
+        ),
+      );
+    }
+
+    if (!response.ok) {
+      let errorMessage: string | null = null;
+      try {
+        const data = (await response.json()) as { error?: string };
+        errorMessage = data?.error ?? null;
+      } catch {
+        try {
+          errorMessage = await response.text();
+        } catch {
+          errorMessage = null;
+        }
+      }
+
+      const baseMessage = `Ollama devolvió un error (${response.status} ${response.statusText}) al listar modelos disponibles`;
+
+      throw new Error(
+        normalizeErrorMessage(baseMessage, errorMessage),
+      );
+    }
+
+    let data: OllamaTagsResponse;
+    try {
+      data = (await response.json()) as OllamaTagsResponse;
+    } catch (error) {
+      throw new Error(
+        normalizeErrorMessage(
+          "Ollama devolvió una respuesta inválida al listar modelos disponibles",
+          error instanceof Error ? error.message : null,
+        ),
+      );
+    }
+
+    const models = data.models ?? [];
+    const targetNames = new Set(
+      [modelName, `${modelName}:latest`]
+        .map((entry) => entry.toLowerCase())
+        .filter(Boolean),
+    );
+
+    const hasModel = models.some((entry) => {
+      const name = entry.name ?? entry.model;
+      if (!name) {
+        return false;
+      }
+      return targetNames.has(name.toLowerCase());
+    });
+
+    if (!hasModel) {
+      console.warn("[ai] model-missing", { model: modelName });
+      throw new OllamaModelMissingError(modelName);
+    }
+  };
+
   const complete = ({
     prompt,
     system,
@@ -104,6 +200,8 @@ export const createOllamaProvider = ({
           "Ollama provider: el prompt está vacío. Proporciona un mensaje de usuario válido.",
         );
       }
+
+      await ensureModelIsAvailable(resolvedModel, controller.signal);
 
       const bodyPayload = {
         model: resolvedModel,

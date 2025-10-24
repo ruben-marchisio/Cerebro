@@ -14,6 +14,12 @@ Asistente de desarrollo para escritorio construido con Tauri + React. Ofrece cha
 2. **Inicia el servicio** con `ollama serve` (la mayoría de instalaciones lo hacen automáticamente). Verifica el estado con `curl http://127.0.0.1:11434/api/version`.
 3. **Descarga un modelo ligero recomendado**: `ollama run mistral`. Este paso lo instala y valida en un solo comando.
 
+## Modelos recomendados
+
+- ⚡ Fast (`llama3.2:3b-instruct`): ideal cuando necesitas respuestas casi instantáneas para tareas cortas o debugging rápido.
+- 🎯 Balanced (`qwen2.5:3b-instruct`): equilibrio entre velocidad y calidad para trabajo diario y prompts variados.
+- 🧩 Pensativo (`mistral`): úsalos en prompts más largos o cuando buscas análisis más detallado aunque tarde un poco más.
+
 Con el servicio activo, la aplicación mostrará el modo `Local (Ollama)` y podrá generar respuestas en streaming con el botón **Detener** funcionando para cortar la petición.
 
 ### ¿Y si Ollama no está disponible?
