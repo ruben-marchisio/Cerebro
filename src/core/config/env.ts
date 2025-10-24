@@ -1,11 +1,13 @@
 type EnvKeys =
   | "VITE_API_BASE_URL"
   | "VITE_LLM_API_KEY"
-  | "VITE_STORAGE_NAMESPACE";
+  | "VITE_STORAGE_NAMESPACE"
+  | "VITE_DEEPSEEK_API_KEY";
 
 export type EnvConfig = {
   apiBaseUrl?: string;
   llmApiKey?: string;
+  deepseekApiKey?: string;
   storageNamespace: string;
 };
 
@@ -21,6 +23,7 @@ const resolveEnvValue = (key: EnvKeys): string | undefined => {
 export const env: EnvConfig = {
   apiBaseUrl: resolveEnvValue("VITE_API_BASE_URL"),
   llmApiKey: resolveEnvValue("VITE_LLM_API_KEY"),
+  deepseekApiKey: resolveEnvValue("VITE_DEEPSEEK_API_KEY"),
   storageNamespace: resolveEnvValue("VITE_STORAGE_NAMESPACE") ?? "cerebro",
 };
 

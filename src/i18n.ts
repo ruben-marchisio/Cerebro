@@ -54,6 +54,15 @@ const dictionaries = {
     newThread: "Nuevo hilo",
     composerPlaceholder: "Escribe un mensaje...",
     send: "Enviar",
+    stop: "Detener",
+    modelLabel: "Modelo",
+    modelUnavailable:
+      "El modelo avanzado no está disponible con la configuración actual.",
+    completionError: "No se pudo completar la respuesta del asistente.",
+    runtimeLocal: "Local (Ollama)",
+    runtimeRemote: "Remoto (DeepSeek)",
+    runtimeNone: "Sin modelo",
+    runtimeSetupCta: "Guía de configuración",
     emptyMessages:
       "No hay mensajes en este contexto. Envía el primero para comenzar la conversación.",
     openChat: "Abrir chat",
@@ -88,6 +97,15 @@ const dictionaries = {
     newThread: "New thread",
     composerPlaceholder: "Type a message...",
     send: "Send",
+    stop: "Stop",
+    modelLabel: "Model",
+    modelUnavailable:
+      "Advanced model is not available with the current configuration.",
+    completionError: "Assistant response could not be completed.",
+    runtimeLocal: "Local (Ollama)",
+    runtimeRemote: "Remote (DeepSeek)",
+    runtimeNone: "No model",
+    runtimeSetupCta: "Setup guide",
     emptyMessages:
       "No messages in this context yet. Send the first one to start the conversation.",
     openChat: "Open chat",

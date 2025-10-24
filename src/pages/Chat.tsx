@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import ChatComposer from "../components/chat/ChatComposer";
 import ChatView from "../components/chat/ChatView";
@@ -12,15 +12,26 @@ import {
   projectsRepo,
   ThreadRecord,
   threadsRepo,
+  createBestProvider,
+  getRuntimeStatus,
+  createFallbackMemoryProvider,
+  type ProviderMessage,
+  type RuntimeStatus,
+  type StreamingProvider,
+  type CompletionHandle,
 } from "../core";
 import {
   getActiveProjectId,
   getActiveThreadId,
   useChatStore,
 } from "../store/chatStore";
+import { useSettingsStore } from "../store/settingsStore";
 import type { TranslationKey } from "../i18n";
 
 type Translator = (key: TranslationKey) => string;
+
+const RUNTIME_GUIDE_URL =
+  "https://github.com/ruben-marchisio/cerebro#runtime-local";
 
 type ChatProps = {
   t: Translator;
@@ -42,6 +53,29 @@ const createAssistantPlaceholder = (threadId: string): ChatMessage => ({
   pending: true,
 });
 
+const isAbortError = (error: unknown): boolean =>
+  error instanceof DOMException && error.name === "AbortError";
+
+const formatPromptFromMessages = (records: MessageRecord[]): string => {
+  if (records.length === 0) {
+    return "";
+  }
+
+  const history = records
+    .map((message) => {
+      const roleLabel =
+        message.role === "assistant"
+          ? "Assistant"
+          : message.role === "system"
+            ? "System"
+            : "User";
+      return `${roleLabel}: ${message.content}`;
+    })
+    .join("\n\n");
+
+  return `${history}\n\nAssistant:`;
+};
+
 export default function Chat({ t }: ChatProps) {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [threads, setThreads] = useState<ThreadRecord[]>([]);
@@ -51,11 +85,71 @@ export default function Chat({ t }: ChatProps) {
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [hasBootstrapped, setHasBootstrapped] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [completionController, setCompletionController] =
+    useState<AbortController | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastTimeoutRef = useRef<number | null>(null);
+  const providerRef = useRef<StreamingProvider | null>(null);
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeStatus>("none");
+  const [providerReady, setProviderReady] = useState(false);
 
   const activeProjectId = useChatStore((state) => state.activeProjectId);
   const activeThreadId = useChatStore((state) => state.activeThreadId);
   const setActiveProject = useChatStore((state) => state.setActiveProject);
   const setActiveThread = useChatStore((state) => state.setActiveThread);
+  const selectedModel = useSettingsStore((state) => state.settings.model);
+
+  const showToast = useCallback((message: string) => {
+    if (toastTimeoutRef.current) {
+      window.clearTimeout(toastTimeoutRef.current);
+    }
+    setToastMessage(message);
+    toastTimeoutRef.current = window.setTimeout(() => {
+      setToastMessage(null);
+      toastTimeoutRef.current = null;
+    }, 3500);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimeoutRef.current) {
+        window.clearTimeout(toastTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const setupProvider = async () => {
+      try {
+        const provider = await createBestProvider();
+        if (cancelled) {
+          return;
+        }
+        providerRef.current = provider;
+        setRuntimeMode(getRuntimeStatus());
+      } catch (error) {
+        console.error("Failed to initialize AI provider", error);
+        if (cancelled) {
+          return;
+        }
+        providerRef.current = createFallbackMemoryProvider();
+        setRuntimeMode("none");
+      } finally {
+        if (!cancelled) {
+          setProviderReady(true);
+        }
+      }
+    };
+
+    void setupProvider();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const hasActiveContext =
     hasBootstrapped &&
@@ -232,6 +326,138 @@ export default function Chat({ t }: ChatProps) {
     [setActiveThread],
   );
 
+  const startCompletion = useCallback(
+    (threadId: string, placeholder: ChatMessage, baseMessages: MessageRecord[]) => {
+      console.log("[chat] requesting completion", {
+        model: selectedModel,
+        threadId,
+      });
+
+      let streamedContent = "";
+      const placeholderId = placeholder.id;
+
+      setIsStreaming(true);
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === placeholderId
+            ? { ...message, content: "", pending: true }
+            : message,
+        ),
+      );
+
+      const provider = providerRef.current;
+
+      if (!provider) {
+        console.warn("[chat] no provider available for completion");
+        setMessages((prev) =>
+          prev.filter((message) => message.id !== placeholderId),
+        );
+        setIsStreaming(false);
+        showToast(t("completionError"));
+        return;
+      }
+
+      const providerMessages: ProviderMessage[] = baseMessages.map(
+        (message) => ({
+          role: message.role,
+          content: message.content,
+        }),
+      );
+
+      const prompt = formatPromptFromMessages(baseMessages);
+
+      let completion: CompletionHandle;
+
+      try {
+        completion = provider.complete({
+          prompt,
+          model: runtimeMode === "remote" ? selectedModel : undefined,
+          messages: providerMessages,
+          onToken: (token) => {
+            if (getActiveThreadId() !== threadId) {
+              streamedContent += token;
+              return;
+            }
+
+            streamedContent += token;
+            setMessages((prev) =>
+              prev.map((item) =>
+                item.id === placeholderId
+                  ? { ...item, content: streamedContent, pending: true }
+                  : item,
+              ),
+            );
+          },
+        });
+      } catch (error) {
+        console.error("Failed to start completion", error);
+        setMessages((prev) =>
+          prev.filter((message) => message.id !== placeholderId),
+        );
+        setIsStreaming(false);
+        const message =
+          error instanceof Error && error.message
+            ? error.message
+            : t("completionError");
+        showToast(message);
+        return;
+      }
+
+      setCompletionController(completion.controller);
+
+      completion.response
+        .then(async (finalText) => {
+          console.log("[chat] completion received");
+          if (getActiveThreadId() !== threadId) {
+            return;
+          }
+
+          await messagesRepo.add({
+            threadId,
+            role: "assistant",
+            content: finalText,
+          });
+
+          if (getActiveThreadId() !== threadId) {
+            return;
+          }
+
+          const updatedMessages = await messagesRepo.findByThread(threadId);
+
+          if (getActiveThreadId() !== threadId) {
+            return;
+          }
+
+          setMessages(sortByDate(updatedMessages));
+        })
+        .catch((error) => {
+          if (isAbortError(error)) {
+            console.log("[chat] completion aborted");
+          } else {
+            console.error("Failed to complete assistant message", error);
+            const message =
+              error instanceof Error && error.message
+                ? error.message
+                : t("completionError");
+            showToast(message);
+          }
+
+          if (getActiveThreadId() !== threadId) {
+            return;
+          }
+
+          setMessages((prev) =>
+            prev.filter((message) => message.id !== placeholderId),
+          );
+        })
+        .finally(() => {
+          setIsStreaming(false);
+          setCompletionController(null);
+        });
+    },
+    [runtimeMode, selectedModel, showToast, t],
+  );
+
   const handleSendMessage = useCallback(
     async (content: string) => {
       if (!hasActiveContext) {
@@ -254,25 +480,34 @@ export default function Chat({ t }: ChatProps) {
         setMessages((prev) => sortByDate([...prev, message]));
 
         if (getActiveThreadId() !== currentThreadId) {
+          setIsSending(false);
           return;
         }
 
         const refreshed = await messagesRepo.findByThread(currentThreadId);
 
         if (getActiveThreadId() !== currentThreadId) {
+          setIsSending(false);
           return;
         }
 
         const placeholder = createAssistantPlaceholder(currentThreadId);
         setMessages(sortByDate([...refreshed, placeholder]));
+        setIsSending(false);
+        startCompletion(currentThreadId, placeholder, refreshed);
       } catch (error) {
         console.error("Failed to send message", error);
-      } finally {
         setIsSending(false);
       }
     },
-    [hasActiveContext],
+    [hasActiveContext, startCompletion],
   );
+
+  const handleAbort = useCallback(() => {
+    if (completionController) {
+      completionController.abort();
+    }
+  }, [completionController]);
 
   useEffect(() => {
     if (!hasBootstrapped) {
@@ -319,9 +554,22 @@ export default function Chat({ t }: ChatProps) {
   }, [handleCreateProject, handleCreateThread, hasBootstrapped, t]);
 
   const composerDisabled = useMemo(
-    () => !hasActiveContext || !activeThreadId || isSending,
-    [activeThreadId, hasActiveContext, isSending],
+    () => !hasActiveContext || !activeThreadId || isSending || !providerReady,
+    [activeThreadId, hasActiveContext, isSending, providerReady],
   );
+
+  const runtimeLabel = useMemo(() => {
+    switch (runtimeMode) {
+      case "local":
+        return t("runtimeLocal");
+      case "remote":
+        return t("runtimeRemote");
+      default:
+        return t("runtimeNone");
+    }
+  }, [runtimeMode, t]);
+
+  const showRuntimeGuide = runtimeMode === "none";
 
   if (!hasBootstrapped) {
     return (
@@ -332,39 +580,63 @@ export default function Chat({ t }: ChatProps) {
   }
 
   return (
-    <div className="flex h-full gap-4">
-      <SidebarProjects
-        projects={projects}
-        activeProjectId={activeProjectId}
-        isLoading={projectsLoading}
-        onSelect={handleSelectProject}
-        onCreate={handleCreateProject}
-        t={t}
-      />
-      <div className="flex flex-1 gap-4">
-        <ThreadList
-          threads={threads}
-          activeThreadId={activeThreadId}
-          isLoading={threadsLoading}
-          hasActiveContext={hasActiveContext}
-          onSelect={handleSelectThread}
-          onCreate={handleCreateThread}
+    <>
+      <div className="flex h-full gap-4">
+        <SidebarProjects
+          projects={projects}
+          activeProjectId={activeProjectId}
+          isLoading={projectsLoading}
+          onSelect={handleSelectProject}
+          onCreate={handleCreateProject}
           t={t}
         />
-        <div className="flex flex-1 flex-col">
-          <ChatView
-            messages={messages}
-            hasActiveThread={Boolean(activeThreadId)}
-            isLoading={messagesLoading}
+        <div className="flex flex-1 gap-4">
+          <ThreadList
+            threads={threads}
+            activeThreadId={activeThreadId}
+            isLoading={threadsLoading}
+            hasActiveContext={hasActiveContext}
+            onSelect={handleSelectThread}
+            onCreate={handleCreateThread}
             t={t}
           />
-          <ChatComposer
-            disabled={composerDisabled}
-            onSend={handleSendMessage}
-            t={t}
-          />
+          <div className="flex flex-1 flex-col">
+            <div className="mb-3 flex flex-wrap items-center gap-3">
+              <span className="rounded-full border border-white/10 bg-slate-900/80 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-slate-200">
+                {runtimeLabel}
+              </span>
+              {showRuntimeGuide && (
+                <a
+                  href={RUNTIME_GUIDE_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-full border border-blue-300/40 bg-blue-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.3em] text-blue-200 transition hover:bg-blue-500/20"
+                >
+                  {t("runtimeSetupCta")}
+                </a>
+              )}
+            </div>
+            <ChatView
+              messages={messages}
+              hasActiveThread={Boolean(activeThreadId)}
+              isLoading={messagesLoading}
+              t={t}
+            />
+            <ChatComposer
+              disabled={composerDisabled}
+              isStreaming={isStreaming}
+              onAbort={handleAbort}
+              onSend={handleSendMessage}
+              t={t}
+            />
+          </div>
         </div>
       </div>
-    </div>
+      {toastMessage && (
+        <div className="fixed bottom-6 right-6 z-50 rounded-lg border border-white/10 bg-slate-900/90 px-4 py-3 text-sm text-red-200 shadow-lg shadow-black/40">
+          {toastMessage}
+        </div>
+      )}
+    </>
   );
 }
