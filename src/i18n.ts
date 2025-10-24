@@ -69,6 +69,9 @@ const dictionaries = {
     modelProfileThoughtfulLabel: "🧩 Pensativo",
     modelProfileThoughtfulDescription:
       "Más espacio para razonamientos y respuestas extensas.",
+    fastDescShort: "Resúmenes veloces (4-6 líneas).",
+    balancedDescShort: "2-4 párrafos claros con ejemplo.",
+    thoughtfulDescShort: "Más contexto y detalle.",
     modelProfileDeepseek13Label: "deepseek-1.3",
     modelProfileDeepseek13Description:
       "Modelo remoto estándar de DeepSeek para uso general.",
@@ -129,6 +132,9 @@ const dictionaries = {
     modelProfileThoughtfulLabel: "🧩 Thoughtful",
     modelProfileThoughtfulDescription:
       "Gives the model more room for reasoning and long replies.",
+    fastDescShort: "Quick summaries (4-6 lines).",
+    balancedDescShort: "2-4 clear paragraphs with an example.",
+    thoughtfulDescShort: "Extra context and detail.",
     modelProfileDeepseek13Label: "deepseek-1.3",
     modelProfileDeepseek13Description:
       "DeepSeek remote default model for general usage.",

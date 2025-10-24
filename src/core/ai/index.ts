@@ -45,6 +45,7 @@ export type {
   ProviderMessage,
   ProviderCompleteParams,
   CompletionHandle,
+  ProviderProfileId,
 } from "./types";
 
 export { createFallbackMemoryProvider } from "./providers/fallback";

@@ -1,8 +1,10 @@
 import type {
   CompletionHandle,
   ProviderCompleteParams,
+  ProviderProfileId,
   StreamingProvider,
 } from "../../types";
+import { getModelProfileById } from "../../modelProfiles";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:11434";
 const GENERATE_ENDPOINT = "/api/generate";
@@ -30,6 +32,15 @@ type OllamaRequestOptions = {
   num_predict?: number;
   temperature?: number;
   num_ctx?: number;
+  top_p?: number;
+  repeat_penalty?: number;
+  repeat_last_n?: number;
+};
+
+type ReasoningOverrides = {
+  temperature?: number;
+  maxOutputTokens?: number;
+  contextTokens?: number;
 };
 
 export class OllamaModelMissingError extends Error {
@@ -53,17 +64,101 @@ const isAbortError = (error: unknown): boolean => {
 const normalizeBaseUrl = (url: string): string =>
   url.endsWith("/") ? url.slice(0, -1) : url;
 
+const PROFILE_EXTRA_TUNING: Partial<Record<ProviderProfileId, OllamaRequestOptions>> = {
+  fast: {
+    top_p: 0.92,
+    repeat_penalty: 1.08,
+    repeat_last_n: 64,
+  },
+  balanced: {
+    top_p: 0.9,
+    repeat_penalty: 1.05,
+    repeat_last_n: 96,
+  },
+  thoughtful: {
+    top_p: 0.88,
+    repeat_penalty: 1.04,
+    repeat_last_n: 160,
+  },
+};
+
 const getTunedOptionsForModel = (
   model: string,
+  profileId?: ProviderProfileId,
+  overrides: ReasoningOverrides = {},
 ): OllamaRequestOptions | undefined => {
   const normalized = model.trim().toLowerCase();
 
+  if (profileId) {
+    const reasoning = getModelProfileById(profileId)?.reasoning;
+
+    if (reasoning) {
+      const options: OllamaRequestOptions = {};
+      const extras = PROFILE_EXTRA_TUNING[profileId];
+      if (extras) {
+        Object.assign(options, extras);
+      }
+
+      const temperature =
+        typeof overrides.temperature === "number"
+          ? overrides.temperature
+          : reasoning.temperature;
+      if (typeof temperature === "number") {
+        options.temperature = temperature;
+      }
+
+      const maxOutputTokens =
+        typeof overrides.maxOutputTokens === "number"
+          ? overrides.maxOutputTokens
+          : reasoning.maxOutputTokens;
+      if (typeof maxOutputTokens === "number") {
+        options.num_predict = maxOutputTokens;
+      }
+
+      const contextTokens =
+        typeof overrides.contextTokens === "number"
+          ? overrides.contextTokens
+          : reasoning.contextTokens;
+      if (typeof contextTokens === "number") {
+        options.num_ctx = contextTokens;
+      }
+
+      return options;
+    }
+  }
+
   if (normalized.startsWith("llama3.2:3b")) {
-    return {
-      num_predict: 512,
-      temperature: 0.7,
-      num_ctx: 2048,
+    const options: OllamaRequestOptions = {
+      top_p: 0.9,
+      repeat_penalty: 1.08,
+      repeat_last_n: 64,
     };
+
+    const temperature =
+      typeof overrides.temperature === "number"
+        ? overrides.temperature
+        : 0.7;
+    if (typeof temperature === "number") {
+      options.temperature = temperature;
+    }
+
+    const maxOutputTokens =
+      typeof overrides.maxOutputTokens === "number"
+        ? overrides.maxOutputTokens
+        : 320;
+    if (typeof maxOutputTokens === "number") {
+      options.num_predict = maxOutputTokens;
+    }
+
+    const contextTokens =
+      typeof overrides.contextTokens === "number"
+        ? overrides.contextTokens
+        : 2048;
+    if (typeof contextTokens === "number") {
+      options.num_ctx = contextTokens;
+    }
+
+    return options;
   }
 
   return undefined;
@@ -205,6 +300,10 @@ export const createOllamaProvider = ({
     model,
     onToken,
     signal,
+    profileId,
+    temperature,
+    maxOutputTokens,
+    contextTokens,
   }: ProviderCompleteParams): CompletionHandle => {
     const controller = new AbortController();
     linkAbortSignals(controller, signal);
@@ -225,7 +324,11 @@ export const createOllamaProvider = ({
 
       await ensureModelIsAvailable(resolvedModel, controller.signal);
 
-      const tunedOptions = getTunedOptionsForModel(resolvedModel);
+      const tunedOptions = getTunedOptionsForModel(resolvedModel, profileId, {
+        temperature,
+        maxOutputTokens,
+        contextTokens,
+      });
 
       const bodyPayload = {
         model: resolvedModel,

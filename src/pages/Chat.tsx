@@ -19,6 +19,7 @@ import {
   type RuntimeStatus,
   type StreamingProvider,
   type CompletionHandle,
+  type ProviderProfileId,
 } from "../core";
 import { OllamaModelMissingError } from "../core/ai/providers/local/ollama";
 import {
@@ -47,6 +48,17 @@ type ChatMessage = MessageRecord & {
 };
 
 type AssistantLanguage = "es" | "en";
+type ProfileId = ProviderProfileId;
+
+const DEFAULT_PROFILE_ID: ProfileId = "balanced";
+
+const isProfileId = (
+  value: string | null | undefined,
+): value is ProfileId => value === "fast" || value === "balanced" || value === "thoughtful";
+
+const resolveProfileId = (
+  candidate: string | null | undefined,
+): ProfileId => (isProfileId(candidate) ? candidate : DEFAULT_PROFILE_ID);
 
 const sortByDate = <T extends { createdAt: string }>(collection: T[]): T[] =>
   [...collection].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -148,20 +160,40 @@ const detectAssistantLanguage = (
   return "es";
 };
 
-const buildSystemPrompt = (language: AssistantLanguage): string => {
-  if (language === "en") {
-    return [
-      "You are Cerebro, a warm front-end partner—keep answers coherent, concise, and entirely in English.",
-      "Use light Markdown with a short intro, a compact bullet list of actions, and a one-line wrap-up without long sections.",
-      "When the user starts a new topic, ignore earlier context and focus only on the latest request while staying practical.",
-    ].join("\n");
+const buildSystemPrompt = (
+  language: AssistantLanguage,
+  profileId: ProfileId,
+): string => {
+  const profile =
+    getModelProfileById(profileId) ?? getModelProfileById(DEFAULT_PROFILE_ID);
+  const reasoningPrompts = profile?.reasoning?.systemPrompts;
+
+  if (reasoningPrompts) {
+    return reasoningPrompts[language] ?? reasoningPrompts.es;
   }
 
-  return [
-    "Eres Cerebro, un aliado front-end cercano: responde siempre en español neutro con mensajes breves y claros.",
-    "Usa Markdown ligero con una introducción corta, lista comprimida de acciones y cierre en una sola frase, sin secciones extensas.",
-    "Si el usuario cambia de tema, deja atrás el historial y atiende solo la solicitud más reciente con recomendaciones útiles.",
-  ].join("\n");
+  const fallbackPrompts = {
+    es: {
+      fast:
+        "Responde en español, directo y en 4-6 líneas máximo. Si hay pasos, usa viñetas breves. No repitas contexto ni cierres largos.",
+      balanced:
+        "Responde en español, clara y en 2-4 párrafos. Añade un ejemplo corto si ayuda. Evita listas innecesarias.",
+      thoughtful:
+        "Responde en español, con profundidad y ejemplos cuando correspondan. Puedes extenderte si aporta valor. Mantén la coherencia con la última solicitud.",
+    },
+    en: {
+      fast:
+        "Reply in English, direct, and keep it within 4-6 sentences max. Use short bullets for steps. Skip repeating context or long sign-offs.",
+      balanced:
+        "Reply in English, clearly, using 2-4 paragraphs. Add a short example if it helps. Avoid unnecessary lists.",
+      thoughtful:
+        "Reply in English with depth and examples when useful. Feel free to elaborate if it adds value. Stay consistent with the latest request.",
+    },
+  } as const;
+
+  const localePrompts = fallbackPrompts[language] ?? fallbackPrompts.es;
+
+  return localePrompts[profileId] ?? localePrompts[DEFAULT_PROFILE_ID];
 };
 
 const formatPromptFromMessages = (
@@ -201,6 +233,27 @@ const formatPromptFromMessages = (
     prompt,
     history: relevantRecords,
   };
+};
+
+const getMaxMessagesForProfile = (
+  profileId: ProfileId,
+): number | undefined => {
+  const modelProfile = getModelProfileById(profileId);
+  const reasoning = modelProfile?.reasoning;
+
+  if (!reasoning) {
+    return undefined;
+  }
+
+  if (typeof reasoning.maxHistoryMessages === "number") {
+    return reasoning.maxHistoryMessages;
+  }
+
+  if (typeof reasoning.contextTokens === "number") {
+    return Math.max(4, Math.floor(reasoning.contextTokens / 128));
+  }
+
+  return undefined;
 };
 
 export default function Chat({ t }: ChatProps) {
@@ -505,8 +558,10 @@ export default function Chat({ t }: ChatProps) {
 
   const startCompletion = useCallback(
     (threadId: string, placeholder: ChatMessage, baseMessages: MessageRecord[]) => {
+      const profileId = resolveProfileId(selectedModelProfile?.id);
+      const reasoningConfig = getModelProfileById(profileId)?.reasoning;
       console.log("[chat] requesting completion", {
-        profileId: selectedModelId,
+        profileId,
         runtimeMode,
         model: runtimeMode === "remote" ? remoteModelName : localModelName,
         threadId,
@@ -537,12 +592,11 @@ export default function Chat({ t }: ChatProps) {
       }
 
       const assistantLanguage = detectAssistantLanguage(baseMessages);
-      const shouldLimitHistory =
-        runtimeMode === "local" && selectedModelId === "fast";
+      const maxMessages = getMaxMessagesForProfile(profileId);
 
       const { prompt, history } = formatPromptFromMessages(baseMessages, {
         language: assistantLanguage,
-        maxMessages: shouldLimitHistory ? 8 : undefined,
+        maxMessages,
       });
 
       const providerMessages: ProviderMessage[] = history.map((message) => ({
@@ -550,7 +604,7 @@ export default function Chat({ t }: ChatProps) {
         content: message.content,
       }));
 
-      const systemPrompt = buildSystemPrompt(assistantLanguage);
+      const systemPrompt = buildSystemPrompt(assistantLanguage, profileId);
 
       let completion: CompletionHandle;
 
@@ -560,6 +614,10 @@ export default function Chat({ t }: ChatProps) {
           model: runtimeMode === "remote" ? remoteModelName : localModelName,
           system: systemPrompt,
           messages: providerMessages,
+          profileId,
+          temperature: reasoningConfig?.temperature,
+          maxOutputTokens: reasoningConfig?.maxOutputTokens,
+          contextTokens: reasoningConfig?.contextTokens,
           onToken: (token) => {
             if (getActiveThreadId() !== threadId) {
               streamedContent += token;
@@ -656,6 +714,7 @@ export default function Chat({ t }: ChatProps) {
       t,
       localModelName,
       setMissingModelProfileId,
+      selectedModelProfile,
     ],
   );
 

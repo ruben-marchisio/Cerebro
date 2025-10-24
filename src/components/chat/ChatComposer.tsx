@@ -83,6 +83,18 @@ export default function ChatComposer({
     [model, profiles, disabledProfileIds],
   );
 
+  const selectedProfileReasoningText = useMemo(() => {
+    const reasoning = selectedProfile?.reasoning;
+    if (!reasoning) {
+      return null;
+    }
+    const descriptors = [reasoning.memoryContext, reasoning.thoughtStyle]
+      .filter(Boolean)
+      .join(" • ");
+    const metrics = `${reasoning.contextTokens} tokens • temp ${reasoning.temperature}`;
+    return descriptors ? `${descriptors} • ${metrics}` : metrics;
+  }, [selectedProfile]);
+
   useEffect(() => {
     if (!profiles.length) {
       return;
@@ -179,6 +191,22 @@ export default function ChatComposer({
               const isActive = profile.id === model && !isDisabled;
               const highlightMissing =
                 !isDisabled && missingProfileId === profile.id;
+              const reasoning = profile.reasoning;
+              const tooltipParts: string[] = [];
+              if (reasoning?.memoryContext) {
+                tooltipParts.push(reasoning.memoryContext);
+              }
+              if (reasoning?.thoughtStyle) {
+                tooltipParts.push(reasoning.thoughtStyle);
+              }
+              if (typeof reasoning?.contextTokens === "number") {
+                tooltipParts.push(`${reasoning.contextTokens} tokens`);
+              }
+              if (typeof reasoning?.temperature === "number") {
+                tooltipParts.push(`temp ${reasoning.temperature}`);
+              }
+              const modeTooltip =
+                tooltipParts.length > 0 ? tooltipParts.join(" • ") : undefined;
               const baseClasses =
                 "flex items-center gap-1 rounded-xl border px-3 py-1 text-xs transition focus:outline-none focus:ring-1 focus:ring-blue-300/60";
               const visualClasses = highlightMissing
@@ -215,6 +243,7 @@ export default function ChatComposer({
                   }}
                   disabled={isDisabled}
                   aria-pressed={isActive}
+                  title={modeTooltip}
                 >
                   {profile.icon ? <span>{profile.icon}</span> : null}
                   <span>{t(profile.label)}</span>
@@ -242,6 +271,11 @@ export default function ChatComposer({
                 <span className="mr-1 align-middle">{selectedProfile.icon}</span>
               ) : null}
               {t(selectedProfile.description)}
+            </p>
+          )}
+          {selectedProfileReasoningText && (
+            <p className="text-[10px] uppercase tracking-[0.25em] text-slate-500">
+              {selectedProfileReasoningText}
             </p>
           )}
           {runtimeCategory === "remote" && !canUseAdvancedModel && (

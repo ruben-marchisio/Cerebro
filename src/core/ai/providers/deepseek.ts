@@ -19,6 +19,8 @@ type CompleteParams = {
   system?: string;
   messages: DeepSeekMessage[];
   stream?: StreamOptions;
+  temperature?: number;
+  maxTokens?: number;
 };
 
 type CompletionHandle = {
@@ -36,6 +38,8 @@ export const complete = ({
   system,
   messages,
   stream,
+  temperature,
+  maxTokens,
 }: CompleteParams): CompletionHandle => {
   const controller = new AbortController();
   const resolvedModel =
@@ -61,6 +65,8 @@ export const complete = ({
         model: resolvedModel,
         messages: payloadMessages,
         stream: true,
+        ...(typeof temperature === "number" ? { temperature } : null),
+        ...(typeof maxTokens === "number" ? { max_tokens: maxTokens } : null),
       }),
       signal: controller.signal,
     });
@@ -236,11 +242,15 @@ export const createDeepSeekProvider = (): StreamingProvider => {
     messages,
     onToken,
     signal,
+    temperature,
+    maxOutputTokens,
   }: ProviderCompleteParams): CompletionHandle => {
     const handle = complete({
       model: model ?? getDefaultModel(),
       system,
       messages: messages ?? [],
+      temperature,
+      maxTokens: maxOutputTokens,
       stream: {
         onToken,
       },
