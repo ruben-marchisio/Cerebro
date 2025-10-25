@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": ".smoke-dist",
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "allowImportingTsExtensions": false,
+    "isolatedModules": false,
+    "noEmitOnError": false,
+    "jsx": "react-jsx",
+    "allowSyntheticDefaultImports": true,
+    "rootDir": ".",
+    "noEmit": false
+  },
+  "include": ["tests/**/*.ts", "src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["node_modules"]
+}

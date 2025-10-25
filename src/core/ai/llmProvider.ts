@@ -1,4 +1,4 @@
-import { getDefaultModel } from "../config/settings";
+import { getDefaultProfileIdForRuntime, getModelProfileById } from "./modelProfiles";
 
 export type LLMRequest = {
   prompt: string;
@@ -13,7 +13,11 @@ export interface LLMProvider {
 class DeepSeekProvider implements LLMProvider {
   readonly model: string;
 
-  constructor(model: string = getDefaultModel()) {
+  constructor(
+    model: string = getModelProfileById(
+      getDefaultProfileIdForRuntime("remote"),
+    )?.model ?? "deepseek-coder",
+  ) {
     this.model = model;
   }
 

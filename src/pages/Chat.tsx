@@ -26,6 +26,17 @@ import {
   getDefaultProfileIdForRuntime,
   getModelProfileById,
 } from "../core/ai/modelProfiles";
+import { probeLocalOllama } from "../core/ai/detect";
+import {
+  executeMcpMethod,
+  type MCPExecResult,
+  type MCPServerId,
+} from "../core/mcp";
+import { appendMetric } from "../core/metrics";
+import {
+  chooseProfile,
+  estimateTokenCount,
+} from "../core/ai/profileSelector";
 import {
   getActiveProjectId,
   getActiveThreadId,
@@ -51,6 +62,29 @@ type AssistantLanguage = "es" | "en";
 type ProfileId = ProviderProfileId;
 
 const DEFAULT_PROFILE_ID: ProfileId = "balanced";
+
+type OllamaStatus = {
+  ok: boolean;
+  latencyMs: number | null;
+  error?: string;
+  updatedAt: number;
+};
+
+const MCP_ICON_MAP: Record<
+  MCPServerId,
+  { icon: string; label: TranslationKey }
+> = {
+  "mcp.files": { icon: "📁", label: "mcpFilesLabel" },
+  "mcp.git": { icon: "🌿", label: "mcpGitLabel" },
+  "mcp.shell": { icon: "💻", label: "mcpShellLabel" },
+  "mcp.system": { icon: "🖥️", label: "mcpSystemLabel" },
+  "mcp.tauri": { icon: "🪟", label: "mcpTauriLabel" },
+};
+
+const getTime = (): number =>
+  typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
 
 const isProfileId = (
   value: string | null | undefined,
@@ -277,51 +311,208 @@ export default function Chat({ t }: ChatProps) {
   const [missingModelProfileId, setMissingModelProfileId] = useState<
     string | null
   >(null);
+  const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>({
+    ok: false,
+    latencyMs: null,
+    error: undefined,
+    updatedAt: Date.now(),
+  });
+  const [isProbingOllama, setIsProbingOllama] = useState(false);
+  const [systemPaths, setSystemPaths] = useState<{
+    home: string;
+    safeOrbit: string;
+  } | null>(null);
 
   const activeProjectId = useChatStore((state) => state.activeProjectId);
   const activeThreadId = useChatStore((state) => state.activeThreadId);
   const setActiveProject = useChatStore((state) => state.setActiveProject);
   const setActiveThread = useChatStore((state) => state.setActiveThread);
-  const selectedModelId = useSettingsStore(
-    (state) => state.settings.model,
+  const profileSettings = useSettingsStore((state) => state.settings.profile);
+  const networkEnabled = useSettingsStore(
+    (state) => state.settings.network.enabled,
   );
 
-  const selectedModelProfile = useMemo(
-    () => getModelProfileById(selectedModelId),
-    [selectedModelId],
+  const profileMode = profileSettings.mode;
+  const manualProfileId = resolveProfileId(profileSettings.manualId);
+
+  const [activeProfileId, setActiveProfileId] =
+    useState<ProfileId>(manualProfileId);
+
+  useEffect(() => {
+    if (profileMode === "manual") {
+      setActiveProfileId(manualProfileId);
+    }
+  }, [profileMode, manualProfileId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let intervalId: number | undefined;
+
+    const probe = async () => {
+      try {
+        if (!cancelled) {
+          setIsProbingOllama(true);
+        }
+        const result = await probeLocalOllama();
+        if (cancelled) {
+          return;
+        }
+        setOllamaStatus({
+          ok: result.ok,
+          latencyMs: result.latencyMs,
+          error: result.error,
+          updatedAt: Date.now(),
+        });
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setOllamaStatus({
+          ok: false,
+          latencyMs: null,
+          error: error instanceof Error ? error.message : String(error),
+          updatedAt: Date.now(),
+        });
+      } finally {
+        if (!cancelled) {
+          setIsProbingOllama(false);
+        }
+      }
+    };
+
+    void probe();
+    intervalId = window.setInterval(() => {
+      void probe();
+    }, 20000);
+
+    return () => {
+      cancelled = true;
+      if (intervalId !== undefined) {
+        window.clearInterval(intervalId);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPaths = async () => {
+      try {
+        const result = (await executeMcpMethod(
+          "mcp.system",
+          "info",
+          { topic: "paths" },
+          {
+            profileId: "thoughtful",
+            requireConfirmation: false,
+            summary: "system-paths",
+          },
+        )) as { home?: string; safeOrbit?: string };
+
+        if (cancelled) {
+          return;
+        }
+
+        if (result?.home && result?.safeOrbit) {
+          setSystemPaths({
+            home: result.home,
+            safeOrbit: result.safeOrbit,
+          });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.warn("[mcp] Failed to load system paths", error);
+        }
+      }
+    };
+
+    void loadPaths();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const activeProfile = useMemo(
+    () => getModelProfileById(activeProfileId),
+    [activeProfileId],
   );
 
-  const remoteModelName = useMemo(() => {
-    if (runtimeMode !== "remote") {
-      return undefined;
-    }
+  const canUseShell = useMemo(
+    () =>
+      activeProfile?.mcpAccess?.some(
+        (rule) => rule.serverId === "mcp.shell" && rule.methods.includes("exec"),
+      ) ?? false,
+    [activeProfile],
+  );
 
-    if (selectedModelProfile?.runtime === "remote") {
-      return selectedModelProfile.model;
-    }
+  const activeMcpIndicators = useMemo(
+    () =>
+      (activeProfile?.mcpAccess ?? []).map((rule) => {
+        const info = MCP_ICON_MAP[rule.serverId];
+        return {
+          id: rule.serverId,
+          icon: info?.icon ?? "🛠️",
+          label: info?.label ?? "mcpGenericLabel",
+        };
+      }),
+    [activeProfile],
+  );
 
-    const fallbackProfile = getModelProfileById(
-      getDefaultProfileIdForRuntime("remote"),
-    );
+  const resolveProfileForRuntime = useCallback(
+    (
+      candidateId: ProfileId,
+      runtime: RuntimeStatus,
+    ): { profileId: ProfileId; model: string | undefined } => {
+      const candidateProfile = getModelProfileById(candidateId);
+      const fallbackLocal = getModelProfileById(
+        getDefaultProfileIdForRuntime("local"),
+      );
+      const fallbackRemote = getModelProfileById(
+        getDefaultProfileIdForRuntime("remote"),
+      );
 
-    return fallbackProfile?.model ?? "deepseek-1.3";
-  }, [runtimeMode, selectedModelProfile]);
+      if (runtime === "local") {
+        if (candidateProfile?.runtime === "local" && candidateProfile.model) {
+          return { profileId: candidateId, model: candidateProfile.model };
+        }
 
-  const localModelName = useMemo(() => {
-    if (runtimeMode !== "local") {
-      return undefined;
-    }
+        const fallbackProfile =
+          fallbackLocal ?? candidateProfile ?? fallbackRemote;
+        const fallbackId = resolveProfileId(fallbackProfile?.id);
 
-    if (selectedModelProfile?.runtime === "local") {
-      return selectedModelProfile.model;
-    }
+        return {
+          profileId: fallbackId,
+          model: fallbackProfile?.model ?? "mistral",
+        };
+      }
 
-    const fallbackProfile = getModelProfileById(
-      getDefaultProfileIdForRuntime("local"),
-    );
+      if (runtime === "remote") {
+        if (candidateProfile?.runtime === "remote" && candidateProfile.model) {
+          return { profileId: candidateId, model: candidateProfile.model };
+        }
 
-    return fallbackProfile?.model;
-  }, [runtimeMode, selectedModelProfile]);
+        const fallbackProfile =
+          fallbackRemote ?? candidateProfile ?? fallbackLocal;
+        const fallbackId = resolveProfileId(fallbackProfile?.id);
+
+        return {
+          profileId: fallbackId,
+          model: fallbackProfile?.model ?? "deepseek-coder",
+        };
+      }
+
+      // Runtime "none" or unknown: fallback to candidate, preferring local defaults.
+      const fallbackProfile = candidateProfile ?? fallbackLocal ?? fallbackRemote;
+      const fallbackId = resolveProfileId(fallbackProfile?.id);
+
+      return {
+        profileId: fallbackId,
+        model: fallbackProfile?.model ?? "mistral",
+      };
+    },
+    [],
+  );
 
   const showToast = useCallback((message: string) => {
     if (toastTimeoutRef.current) {
@@ -346,11 +537,23 @@ export default function Chat({ t }: ChatProps) {
     let cancelled = false;
 
     const setupProvider = async () => {
+      setProviderReady(false);
+      providerRef.current = null;
+
       try {
-        const provider = await createBestProvider();
+        const provider = await createBestProvider({
+          allowRemote: networkEnabled,
+          onStatusChange: (status) => {
+            if (!cancelled) {
+              setRuntimeMode(status);
+            }
+          },
+        });
+
         if (cancelled) {
           return;
         }
+
         providerRef.current = provider;
         setRuntimeMode(getRuntimeStatus());
       } catch (error) {
@@ -372,7 +575,7 @@ export default function Chat({ t }: ChatProps) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [networkEnabled]);
 
   const hasActiveContext =
     hasBootstrapped &&
@@ -556,14 +759,103 @@ export default function Chat({ t }: ChatProps) {
     [setActiveThread],
   );
 
+  const handleRestartOllama = useCallback(async () => {
+    if (!canUseShell) {
+      showToast(t("ollamaRestartUnavailable"));
+      return;
+    }
+
+    try {
+      setIsProbingOllama(true);
+      await executeMcpMethod(
+        "mcp.shell",
+        "exec",
+        {
+          command: "ollama",
+          args: ["serve"],
+        },
+        {
+          profileId: activeProfileId,
+          requireConfirmation: true,
+          summary: "restart-ollama",
+        },
+      );
+      showToast(t("ollamaRestartSuccess"));
+      const result = await probeLocalOllama();
+      setOllamaStatus({
+        ok: result.ok,
+        latencyMs: result.latencyMs,
+        error: result.error,
+        updatedAt: Date.now(),
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : t("ollamaRestartError");
+      showToast(message);
+    } finally {
+      setIsProbingOllama(false);
+    }
+  }, [activeProfileId, canUseShell, showToast, t]);
+
+  const handleViewOllamaLogs = useCallback(async () => {
+    if (!canUseShell || !systemPaths) {
+      showToast(t("ollamaLogsUnavailable"));
+      return;
+    }
+
+    const logPath = `${systemPaths.home}/.ollama/logs/serve.log`;
+
+    try {
+      const result = (await executeMcpMethod(
+        "mcp.shell",
+        "exec",
+        {
+          command: "tail",
+          args: ["-n", "60", logPath],
+        },
+        {
+          profileId: activeProfileId,
+          requireConfirmation: true,
+          summary: "view-ollama-logs",
+        },
+      )) as MCPExecResult;
+
+      const output = result.stdout.trim();
+      const message = output.length > 0 ? output : t("ollamaLogsEmpty");
+      window.alert(`${t("ollamaLogsTitle")}\n\n${message}`);
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : t("ollamaLogsError");
+      showToast(message);
+    }
+  }, [activeProfileId, canUseShell, showToast, systemPaths, t]);
+
   const startCompletion = useCallback(
-    (threadId: string, placeholder: ChatMessage, baseMessages: MessageRecord[]) => {
-      const profileId = resolveProfileId(selectedModelProfile?.id);
+    (
+      threadId: string,
+      placeholder: ChatMessage,
+      baseMessages: MessageRecord[],
+      requestedProfileId: ProfileId,
+    ) => {
+      const { profileId, model } = resolveProfileForRuntime(
+        requestedProfileId,
+        runtimeMode,
+      );
       const reasoningConfig = getModelProfileById(profileId)?.reasoning;
+
+      setActiveProfileId(profileId);
+
+      const completionStartedAt = getTime();
+
       console.log("[chat] requesting completion", {
+        requestedProfileId,
         profileId,
         runtimeMode,
-        model: runtimeMode === "remote" ? remoteModelName : localModelName,
+        model,
         threadId,
       });
 
@@ -599,6 +891,8 @@ export default function Chat({ t }: ChatProps) {
         maxMessages,
       });
 
+      const tokensIn = estimateTokenCount(prompt);
+
       const providerMessages: ProviderMessage[] = history.map((message) => ({
         role: message.role,
         content: message.content,
@@ -607,11 +901,13 @@ export default function Chat({ t }: ChatProps) {
       const systemPrompt = buildSystemPrompt(assistantLanguage, profileId);
 
       let completion: CompletionHandle;
+      const targetModel =
+        model ?? getModelProfileById(profileId)?.model ?? "mistral";
 
       try {
         completion = provider.complete({
           prompt,
-          model: runtimeMode === "remote" ? remoteModelName : localModelName,
+          model: targetModel,
           system: systemPrompt,
           messages: providerMessages,
           profileId,
@@ -675,13 +971,25 @@ export default function Chat({ t }: ChatProps) {
           }
 
           setMessages(sortByDate(updatedMessages));
+
+          const latencyMs = Math.max(0, Math.round(getTime() - completionStartedAt));
+          const tokensOut = estimateTokenCount(finalText);
+          void appendMetric({
+            timestamp: Date.now(),
+            mode: profileId,
+            provider: targetModel ?? runtimeMode,
+            latencyMs,
+            tokensIn,
+            tokensOut,
+            success: true,
+          });
         })
         .catch((error) => {
           if (isAbortError(error)) {
             console.log("[chat] completion aborted");
           } else if (error instanceof OllamaModelMissingError) {
-            if (runtimeMode === "local" && selectedModelId) {
-              setMissingModelProfileId(selectedModelId);
+            if (runtimeMode === "local") {
+              setMissingModelProfileId(profileId);
             }
             showToast(error.message);
           } else {
@@ -700,6 +1008,17 @@ export default function Chat({ t }: ChatProps) {
           setMessages((prev) =>
             prev.filter((message) => message.id !== placeholderId),
           );
+
+          const latencyMs = Math.max(0, Math.round(getTime() - completionStartedAt));
+          void appendMetric({
+            timestamp: Date.now(),
+            mode: profileId,
+            provider: targetModel ?? runtimeMode,
+            latencyMs,
+            tokensIn,
+            tokensOut: 0,
+            success: false,
+          });
         })
         .finally(() => {
           setIsStreaming(false);
@@ -707,14 +1026,12 @@ export default function Chat({ t }: ChatProps) {
         });
     },
     [
-      remoteModelName,
       runtimeMode,
-      selectedModelId,
       showToast,
       t,
-      localModelName,
       setMissingModelProfileId,
-      selectedModelProfile,
+      resolveProfileForRuntime,
+      setActiveProfileId,
     ],
   );
 
@@ -731,6 +1048,14 @@ export default function Chat({ t }: ChatProps) {
 
       try {
         setIsSending(true);
+        const requestedProfileId: ProfileId =
+          profileMode === "manual"
+            ? manualProfileId
+            : chooseProfile({
+                tokenCount: estimateTokenCount(content),
+                content,
+              });
+
         const message = await messagesRepo.add({
           threadId: currentThreadId,
           role: "user",
@@ -754,13 +1079,18 @@ export default function Chat({ t }: ChatProps) {
         const placeholder = createAssistantPlaceholder(currentThreadId);
         setMessages(sortByDate([...refreshed, placeholder]));
         setIsSending(false);
-        startCompletion(currentThreadId, placeholder, refreshed);
+        startCompletion(
+          currentThreadId,
+          placeholder,
+          refreshed,
+          requestedProfileId,
+        );
       } catch (error) {
         console.error("Failed to send message", error);
         setIsSending(false);
       }
     },
-    [hasActiveContext, startCompletion],
+    [hasActiveContext, startCompletion, profileMode, manualProfileId],
   );
 
   const handleAbort = useCallback(() => {
@@ -774,16 +1104,19 @@ export default function Chat({ t }: ChatProps) {
       return;
     }
 
-    if (
-      runtimeMode !== "local" ||
-      selectedModelId !== missingModelProfileId
-    ) {
+    if (runtimeMode !== "local") {
+      setMissingModelProfileId(null);
+      return;
+    }
+
+    if (profileMode === "manual" && manualProfileId !== missingModelProfileId) {
       setMissingModelProfileId(null);
     }
   }, [
+    manualProfileId,
     missingModelProfileId,
+    profileMode,
     runtimeMode,
-    selectedModelId,
     setMissingModelProfileId,
   ]);
 
@@ -847,6 +1180,43 @@ export default function Chat({ t }: ChatProps) {
     }
   }, [runtimeMode, t]);
 
+  const ollamaIndicator = useMemo(() => {
+    if (isProbingOllama) {
+      return {
+        tone: "warning" as const,
+        icon: "🟡",
+        message: t("ollamaStatusChecking"),
+        latency: null,
+      };
+    }
+
+    if (ollamaStatus.ok) {
+      const latency = ollamaStatus.latencyMs ?? null;
+      if (latency !== null && latency > 300) {
+        return {
+          tone: "warning" as const,
+          icon: "🟡",
+          message: t("ollamaStatusSlow"),
+          latency,
+        };
+      }
+
+      return {
+        tone: "success" as const,
+        icon: "🟢",
+        message: t("ollamaStatusReady"),
+        latency,
+      };
+    }
+
+    return {
+      tone: "error" as const,
+      icon: "🔴",
+      message: t("ollamaStatusDown"),
+      latency: null,
+    };
+  }, [isProbingOllama, ollamaStatus, t]);
+
   const showRuntimeGuide = runtimeMode === "none";
 
   if (!hasBootstrapped) {
@@ -883,6 +1253,19 @@ export default function Chat({ t }: ChatProps) {
               <span className="rounded-full border border-white/10 bg-slate-900/80 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-slate-200">
                 {runtimeLabel}
               </span>
+              {activeProfile && (
+                <span className="flex items-center gap-2 rounded-full border border-blue-300/40 bg-blue-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-blue-100">
+                  {activeProfile.icon ? (
+                    <span>{activeProfile.icon}</span>
+                  ) : null}
+                  <span>{t(activeProfile.label)}</span>
+                  {profileMode === "manual" && (
+                    <span className="rounded-full bg-blue-500/20 px-2 py-[2px] text-[10px] font-semibold uppercase tracking-[0.25em] text-blue-200">
+                      MANUAL
+                    </span>
+                  )}
+                </span>
+              )}
               {showRuntimeGuide && (
                 <a
                   href={RUNTIME_GUIDE_URL}
@@ -893,6 +1276,43 @@ export default function Chat({ t }: ChatProps) {
                   {t("runtimeSetupCta")}
                 </a>
               )}
+              {ollamaIndicator && (
+                <span
+                  className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.25em] ${
+                    ollamaIndicator.tone === "success"
+                      ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
+                      : ollamaIndicator.tone === "warning"
+                        ? "border-amber-400/40 bg-amber-500/10 text-amber-200"
+                        : "border-red-400/60 bg-red-500/10 text-red-200"
+                  }`}
+                >
+                  <span>{ollamaIndicator.icon}</span>
+                  <span>{ollamaIndicator.message}</span>
+                  {typeof ollamaIndicator.latency === "number" && (
+                    <span className="font-mono text-[10px] lowercase tracking-normal text-slate-200/70">
+                      {ollamaIndicator.latency} ms
+                    </span>
+                  )}
+                </span>
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleRestartOllama}
+                  disabled={!canUseShell || isProbingOllama}
+                  className="rounded-md border border-blue-300/40 bg-blue-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.3em] text-blue-100 transition hover:bg-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {t("ollamaRestart")}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleViewOllamaLogs}
+                  disabled={!canUseShell}
+                  className="rounded-md border border-slate-300/30 bg-slate-800/60 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.3em] text-slate-200 transition hover:bg-slate-700/60 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {t("ollamaLogsButton")}
+                </button>
+              </div>
             </div>
             <ChatView
               messages={messages}
@@ -907,6 +1327,7 @@ export default function Chat({ t }: ChatProps) {
               onSend={handleSendMessage}
               runtime={runtimeMode}
               missingProfileId={missingModelProfileId}
+              activeProfileId={activeProfileId}
               t={t}
             />
           </div>
@@ -915,6 +1336,26 @@ export default function Chat({ t }: ChatProps) {
       {toastMessage && (
         <div className="fixed bottom-6 right-6 z-50 rounded-lg border border-white/10 bg-slate-900/90 px-4 py-3 text-sm text-red-200 shadow-lg shadow-black/40">
           {toastMessage}
+        </div>
+      )}
+      {activeMcpIndicators.length > 0 && (
+        <div className="pointer-events-none fixed bottom-6 left-6 z-40 flex flex-col gap-2">
+          <div className="pointer-events-none rounded-2xl border border-slate-500/30 bg-slate-900/80 px-3 py-2 text-[10px] uppercase tracking-[0.3em] text-slate-300 shadow-lg shadow-black/40">
+            <span className="block text-[11px] font-semibold text-slate-400">
+              {t("mcpPanelTitle")}
+            </span>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {activeMcpIndicators.map((indicator) => (
+                <span
+                  key={indicator.id}
+                  className="pointer-events-auto flex items-center gap-1 rounded-full border border-slate-500/30 bg-slate-800/60 px-2 py-[2px] text-[11px] font-semibold text-slate-200"
+                >
+                  <span>{indicator.icon}</span>
+                  <span>{t(indicator.label)}</span>
+                </span>
+              ))}
+            </div>
+          </div>
         </div>
       )}
     </>

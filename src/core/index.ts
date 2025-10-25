@@ -4,5 +4,7 @@ export * from "./config/settings";
 export * from "./config/env";
 export * from "./ai";
 export * from "./ai/providers/deepseek";
+export * from "./mcp";
+export * from "./metrics";
 export * from "./repos";
 export * from "./seed";

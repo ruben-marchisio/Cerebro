@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:smoke": "tsc --project tsconfig.smoke.json && node --experimental-specifier-resolution=node .smoke-dist/tests/smoke.js"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

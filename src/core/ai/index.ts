@@ -14,12 +14,21 @@ const createLocalProvider = (): StreamingProvider =>
     defaultModel: DEFAULT_OLLAMA_MODEL,
   });
 
-export const createBestProvider = async (): Promise<StreamingProvider> => {
+type ProviderSelectionOptions = {
+  allowRemote?: boolean;
+  onStatusChange?: (status: RuntimeStatus) => void;
+};
+
+export const createBestProvider = async ({
+  allowRemote = true,
+  onStatusChange,
+}: ProviderSelectionOptions = {}): Promise<StreamingProvider> => {
   try {
     const isOllamaAvailable = await pingLocalOllama();
 
     if (isOllamaAvailable) {
       runtimeStatus = "local";
+      onStatusChange?.(runtimeStatus);
       return createLocalProvider();
     }
   } catch (error) {
@@ -28,12 +37,14 @@ export const createBestProvider = async (): Promise<StreamingProvider> => {
 
   const { deepseekApiKey } = getEnv();
 
-  if (deepseekApiKey) {
+  if (allowRemote && deepseekApiKey) {
     runtimeStatus = "remote";
+    onStatusChange?.(runtimeStatus);
     return createDeepSeekProvider();
   }
 
   runtimeStatus = "none";
+  onStatusChange?.(runtimeStatus);
   return createFallbackMemoryProvider();
 };
 

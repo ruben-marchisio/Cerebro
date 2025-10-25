@@ -1,6 +1,5 @@
 export const uiToApiModel = {
-  "deepseek-1.3": "deepseek-chat",
-  "deepseek-6.7": "deepseek-reasoner",
+  "deepseek-coder": "deepseek-coder",
 } as const;
 
 export type UiModel = keyof typeof uiToApiModel;

@@ -1,4 +1,5 @@
 import type { TranslationKey } from "../../i18n";
+import type { MCPAccessRule } from "../mcp";
 
 type LocalizedPrompts = {
   es: string;
@@ -13,6 +14,7 @@ export type ModelProfileReasoning = {
   temperature: number;
   maxHistoryMessages?: number;
   systemPrompts: LocalizedPrompts;
+  reasoningLevel?: "low" | "medium" | "high";
 };
 
 export type ModelRuntime = "local" | "remote";
@@ -26,6 +28,7 @@ export type ModelProfile = {
   icon?: string;
   requiresAdvanced?: boolean;
   reasoning?: ModelProfileReasoning;
+  mcpAccess?: MCPAccessRule[];
 };
 
 const profiles: ModelProfile[] = [
@@ -33,9 +36,9 @@ const profiles: ModelProfile[] = [
     id: "fast",
     label: "modelProfileFastLabel",
     description: "modelProfileFastDescription",
-    model: "llama3.2:3b",
+    model: "llama3.2:3b-instruct",
     runtime: "local",
-    icon: "⚡",
+    icon: "🌀",
     reasoning: {
       memoryContext: "humano",
       thoughtStyle: "directo",
@@ -43,19 +46,21 @@ const profiles: ModelProfile[] = [
       maxOutputTokens: 512,
       temperature: 1.1,
       maxHistoryMessages: 6,
+      reasoningLevel: "low",
       systemPrompts: {
-        es: `Actúa como una mente humana ágil y directa. Responde siempre en español coloquial, como lo haría una persona real. Prioriza respuestas cortas y accionables con soluciones inmediatas y un tono cálido. Evita tecnicismos innecesarios y usa listas solo cuando faciliten el siguiente paso.`,
-        en: `Act as an agile, human-minded assistant. Always reply in natural, conversational English as if you were a real person. Favour short, actionable answers with immediate solutions and a warm tone. Avoid unnecessary jargon and only use lists when they make the next step clearer.`,
+        es: `Actúa como una mente humana rápida y cercana. Habla en español directo, cálido y breve. Entrega respuestas accionables en 4-6 frases, usa listas solo si facilitan el próximo paso y evita explicaciones largas.`,
+        en: `Act as a quick, human-like thinker. Answer in natural English with warmth and keep it brief. Deliver actionable replies within 4-6 sentences, using lists only when they clarify the next step and skipping long sign-offs.`,
       },
     },
+    mcpAccess: [],
   },
   {
     id: "balanced",
     label: "modelProfileBalancedLabel",
     description: "modelProfileBalancedDescription",
-    model: "qwen2.5:3b-instruct",
+    model: "mistral",
     runtime: "local",
-    icon: "🎯",
+    icon: "⚖️",
     reasoning: {
       memoryContext: "natural",
       thoughtStyle: "analítico",
@@ -63,18 +68,25 @@ const profiles: ModelProfile[] = [
       maxOutputTokens: 2048,
       temperature: 0.9,
       maxHistoryMessages: 12,
+      reasoningLevel: "medium",
       systemPrompts: {
-        es: `Actúa como un pensador natural y analítico. Responde en español con claridad cercana, combinando contexto con recomendaciones prácticas. Ofrece explicaciones estructuradas, ejemplos breves cuando aporten valor y mantiene un equilibrio entre detalle y humanidad sin divagar.`,
-        en: `Act as a natural yet analytical thinker. Answer in English with a clear, approachable tone that blends context with practical guidance. Provide structured explanations and concise examples when they add value, balancing detail with warmth while staying focused on the request.`,
+        es: `Actúa como un pensador natural y explicativo. Responde en español con claridad y estructura, ofreciendo 2-4 párrafos que mezclen contexto con pasos accionables. Incluye ejemplos breves cuando aporten valor y mantén un tono humano y cercano.`,
+        en: `Act as a natural, explanatory thinker. Reply in English with structured clarity, delivering 2-4 paragraphs that mix context with actionable steps. Add short examples when they add value and keep a human, approachable tone.`,
       },
     },
+    mcpAccess: [
+      {
+        serverId: "mcp.files",
+        methods: ["list", "read", "info"],
+      },
+    ],
   },
   {
     id: "thoughtful",
     label: "modelProfileThoughtfulLabel",
     description: "modelProfileThoughtfulDescription",
-    model: "mistral",
-    runtime: "local",
+    model: "deepseek-coder",
+    runtime: "remote",
     icon: "🧩",
     reasoning: {
       memoryContext: "arquitecto",
@@ -83,32 +95,41 @@ const profiles: ModelProfile[] = [
       maxOutputTokens: 4096,
       temperature: 0.6,
       maxHistoryMessages: 18,
+      reasoningLevel: "high",
       systemPrompts: {
-        es: `Actúa como un arquitecto de soluciones profundo. Responde en español con calma estratégica, explicando tu razonamiento paso a paso. Descompone los problemas, planifica en capas y diseña proyectos de programación completos y sin errores cuando sea necesario. Mantén rigor técnico sin perder claridad humana.`,
-        en: `Act as a deep solution architect. Reply in English with a calm, strategic tone and walk through your reasoning step by step. Break problems down, plan in layers, and design flawless programming projects when needed. Maintain technical rigour while keeping your explanations human and clear.`,
+        es: `Actúa como un arquitecto de soluciones estratégico. Responde en español con calma, expone tu razonamiento paso a paso y diseña planes completos para proyectos de desarrollo. Descompone problemas en capas, valida supuestos y prioriza la robustez técnica sin perder claridad humana.`,
+        en: `Act as a strategic solution architect. Reply in English calmly, walk through your reasoning step by step, and design end-to-end plans for development projects. Break problems into layers, validate assumptions, and prioritise technical robustness while staying human and clear.`,
       },
     },
-  },
-  {
-    id: "deepseek-1.3",
-    label: "modelProfileDeepseek13Label",
-    description: "modelProfileDeepseek13Description",
-    model: "deepseek-1.3",
-    runtime: "remote",
-  },
-  {
-    id: "deepseek-6.7",
-    label: "modelProfileDeepseek67Label",
-    description: "modelProfileDeepseek67Description",
-    model: "deepseek-6.7",
-    runtime: "remote",
     requiresAdvanced: true,
+    mcpAccess: [
+      {
+        serverId: "mcp.files",
+        methods: ["list", "read", "write", "info"],
+      },
+      {
+        serverId: "mcp.git",
+        methods: ["exec", "info"],
+      },
+      {
+        serverId: "mcp.shell",
+        methods: ["exec", "info"],
+      },
+      {
+        serverId: "mcp.system",
+        methods: ["info"],
+      },
+      {
+        serverId: "mcp.tauri",
+        methods: ["exec", "info"],
+      },
+    ],
   },
 ];
 
 const defaultProfileByRuntime: Record<ModelRuntime, string> = {
   local: "balanced",
-  remote: "deepseek-1.3",
+  remote: "thoughtful",
 };
 
 export const modelProfiles = profiles;
@@ -124,3 +145,11 @@ export const getModelProfilesByRuntime = (
 export const getDefaultProfileIdForRuntime = (
   runtime: ModelRuntime,
 ): string => defaultProfileByRuntime[runtime];
+
+export const getMcpAccessForProfile = (
+  profileId: string,
+): MCPAccessRule[] =>
+  (getModelProfileById(profileId)?.mcpAccess ?? []).map((rule) => ({
+    serverId: rule.serverId,
+    methods: [...rule.methods],
+  }));

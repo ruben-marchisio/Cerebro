@@ -4,9 +4,10 @@ import { getEnv } from "../../core";
 import type { RuntimeStatus } from "../../core/ai";
 import {
   getDefaultProfileIdForRuntime,
-  getModelProfilesByRuntime,
-  type ModelRuntime,
+  modelProfiles,
+  type ModelProfile,
 } from "../../core/ai/modelProfiles";
+import type { ProviderProfileId } from "../../core/ai/types";
 import type { TranslationKey } from "../../i18n";
 import { useSettingsStore } from "../../store/settingsStore";
 
@@ -19,6 +20,7 @@ type ChatComposerProps = {
   onSend: (content: string) => Promise<void> | void;
   runtime: RuntimeStatus;
   missingProfileId?: string | null;
+  activeProfileId: ProviderProfileId;
   t: Translator;
 };
 
@@ -29,62 +31,63 @@ export default function ChatComposer({
   onSend,
   runtime,
   missingProfileId = null,
+  activeProfileId,
   t,
 }: ChatComposerProps) {
   const [message, setMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const model = useSettingsStore((state) => state.settings.model);
-  const updateModel = useSettingsStore((state) => state.setModel);
+  const profileMode = useSettingsStore(
+    (state) => state.settings.profile.mode,
+  );
+  const manualProfileId = useSettingsStore(
+    (state) => state.settings.profile.manualId,
+  );
+  const networkEnabled = useSettingsStore(
+    (state) => state.settings.network.enabled,
+  );
+  const setProfileMode = useSettingsStore((state) => state.setProfileMode);
+  const setManualProfile = useSettingsStore((state) => state.setManualProfile);
 
   const { deepseekApiKey } = getEnv();
-  const canUseAdvancedModel = useMemo(
-    () => Boolean(deepseekApiKey),
-    [deepseekApiKey],
+  const remoteAccessEnabled = useMemo(
+    () => Boolean(deepseekApiKey) && networkEnabled,
+    [deepseekApiKey, networkEnabled],
   );
 
-  const runtimeCategory: ModelRuntime =
-    runtime === "local" ? "local" : "remote";
-
-  const { profiles, disabledProfileIds } = useMemo(() => {
-    const available = getModelProfilesByRuntime(runtimeCategory);
-
-    if (runtimeCategory !== "remote") {
-      return {
-        profiles: available,
-        disabledProfileIds: new Set<string>(),
-      };
-    }
-
-    if (canUseAdvancedModel) {
-      return {
-        profiles: available,
-        disabledProfileIds: new Set<string>(),
-      };
-    }
-
-    const disabled = new Set<string>(
-      available
-        .filter((profile) => profile.requiresAdvanced)
-        .map((profile) => profile.id),
-    );
-
-    return {
-      profiles: available,
-      disabledProfileIds: disabled,
-    };
-  }, [canUseAdvancedModel, runtimeCategory]);
-
-  const selectedProfile = useMemo(
-    () =>
-      profiles.find(
-        (profile) =>
-          profile.id === model && !disabledProfileIds.has(profile.id),
-      ),
-    [model, profiles, disabledProfileIds],
+  const profiles = useMemo<ModelProfile[]>(
+    () => modelProfiles,
+    [],
   );
 
-  const selectedProfileReasoningText = useMemo(() => {
-    const reasoning = selectedProfile?.reasoning;
+  const disabledProfileIds = useMemo(() => {
+    const disabled = new Set<string>();
+    for (const profile of profiles) {
+      if (profile.runtime === "remote" && !remoteAccessEnabled) {
+        disabled.add(profile.id);
+      } else if (profile.requiresAdvanced && !remoteAccessEnabled) {
+        disabled.add(profile.id);
+      }
+    }
+    return disabled;
+  }, [profiles, remoteAccessEnabled]);
+
+  const manualProfile = useMemo(
+    () => profiles.find((profile) => profile.id === manualProfileId) ?? null,
+    [manualProfileId, profiles],
+  );
+
+  const activeProfile = useMemo(
+    () => profiles.find((profile) => profile.id === activeProfileId) ?? null,
+    [activeProfileId, profiles],
+  );
+
+  const displayProfile = useMemo(
+    () => (profileMode === "manual" ? manualProfile : activeProfile ?? manualProfile),
+    [activeProfile, manualProfile, profileMode],
+  );
+
+  const displayProfileReasoningText = useMemo(() => {
+    const reasoning = displayProfile?.reasoning;
     if (!reasoning) {
       return null;
     }
@@ -93,19 +96,20 @@ export default function ChatComposer({
       .join(" • ");
     const metrics = `${reasoning.contextTokens} tokens • temp ${reasoning.temperature}`;
     return descriptors ? `${descriptors} • ${metrics}` : metrics;
-  }, [selectedProfile]);
+  }, [displayProfile]);
 
   useEffect(() => {
-    if (!profiles.length) {
+    if (!profiles.length || profileMode !== "manual") {
       return;
     }
 
-    const isDisabled = disabledProfileIds.has(model);
-    if (selectedProfile && !isDisabled) {
+    if (!disabledProfileIds.has(manualProfileId)) {
       return;
     }
 
+    const runtimeCategory = runtime === "remote" ? "remote" : "local";
     const preferredId = getDefaultProfileIdForRuntime(runtimeCategory);
+
     const preferredProfile = profiles.find(
       (profile) =>
         profile.id === preferredId && !disabledProfileIds.has(profile.id),
@@ -113,19 +117,23 @@ export default function ChatComposer({
 
     const fallbackProfile =
       preferredProfile ??
+      profiles.find(
+        (profile) =>
+          profile.runtime === "local" && !disabledProfileIds.has(profile.id),
+      ) ??
       profiles.find((profile) => !disabledProfileIds.has(profile.id)) ??
       profiles[0];
 
-    if (fallbackProfile && fallbackProfile.id !== model) {
-      void updateModel(fallbackProfile.id);
+    if (fallbackProfile && fallbackProfile.id !== manualProfileId) {
+      void setManualProfile(fallbackProfile.id as ProviderProfileId);
     }
   }, [
     disabledProfileIds,
-    model,
+    manualProfileId,
+    profileMode,
     profiles,
-    runtimeCategory,
-    selectedProfile,
-    updateModel,
+    runtime,
+    setManualProfile,
   ]);
 
   const resetComposer = () => {
@@ -188,7 +196,10 @@ export default function ChatComposer({
           <div className="flex flex-wrap gap-2">
             {profiles.map((profile) => {
               const isDisabled = disabledProfileIds.has(profile.id);
-              const isActive = profile.id === model && !isDisabled;
+              const isActive =
+                !isDisabled &&
+                ((profileMode === "manual" && profile.id === manualProfileId) ||
+                  (profileMode === "auto" && profile.id === activeProfileId));
               const highlightMissing =
                 !isDisabled && missingProfileId === profile.id;
               const reasoning = profile.reasoning;
@@ -236,10 +247,15 @@ export default function ChatComposer({
                   type="button"
                   className={buttonClasses}
                   onClick={() => {
-                    if (isDisabled || profile.id === model) {
+                    if (isDisabled) {
                       return;
                     }
-                    void updateModel(profile.id);
+                    if (profileMode === "manual" && profile.id === manualProfileId) {
+                      void setProfileMode("auto");
+                      return;
+                    }
+                    void setProfileMode("manual");
+                    void setManualProfile(profile.id as ProviderProfileId);
                   }}
                   disabled={isDisabled}
                   aria-pressed={isActive}
@@ -257,7 +273,8 @@ export default function ChatComposer({
               <button
                 type="button"
                 onClick={() => {
-                  void updateModel("balanced");
+                  void setProfileMode("manual");
+                  void setManualProfile("balanced");
                 }}
                 className="rounded-lg border border-red-300/50 bg-red-500/30 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.25em] text-red-50 transition hover:bg-red-500/40"
               >
@@ -265,20 +282,25 @@ export default function ChatComposer({
               </button>
             </div>
           )}
-          {selectedProfile && (
+          {displayProfile && (
             <p className="text-[11px] text-slate-400">
-              {selectedProfile.icon ? (
-                <span className="mr-1 align-middle">{selectedProfile.icon}</span>
+              {displayProfile.icon ? (
+                <span className="mr-1 align-middle">{displayProfile.icon}</span>
               ) : null}
-              {t(selectedProfile.description)}
+              {t(displayProfile.description)}
             </p>
           )}
-          {selectedProfileReasoningText && (
+          {displayProfileReasoningText && (
             <p className="text-[10px] uppercase tracking-[0.25em] text-slate-500">
-              {selectedProfileReasoningText}
+              {displayProfileReasoningText}
             </p>
           )}
-          {runtimeCategory === "remote" && !canUseAdvancedModel && (
+          {profileMode === "manual" && disabledProfileIds.has(manualProfileId) && (
+            <p className="text-[11px] text-slate-500">
+              {t("modelUnavailable")}
+            </p>
+          )}
+          {!remoteAccessEnabled && runtime === "remote" && (
             <p className="text-[11px] text-slate-500">
               {t("modelUnavailable")}
             </p>

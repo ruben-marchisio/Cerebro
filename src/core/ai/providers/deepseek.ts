@@ -1,6 +1,6 @@
 import { uiToApiModel } from "../modelMap";
 import type { StreamingProvider, ProviderCompleteParams } from "../types";
-import { getDefaultModel } from "../../config/settings";
+import { getModelProfileById, getDefaultProfileIdForRuntime } from "../modelProfiles";
 import { getEnv } from "../../config/env";
 
 export type DeepSeekMessage = {
@@ -246,7 +246,10 @@ export const createDeepSeekProvider = (): StreamingProvider => {
     maxOutputTokens,
   }: ProviderCompleteParams): CompletionHandle => {
     const handle = complete({
-      model: model ?? getDefaultModel(),
+      model:
+        model ??
+        getModelProfileById(getDefaultProfileIdForRuntime("remote"))?.model ??
+        "deepseek-coder",
       system,
       messages: messages ?? [],
       temperature,
