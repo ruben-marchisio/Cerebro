@@ -34,6 +34,7 @@ type SettingsState = {
   hydrate: () => Promise<void>;
   setLanguage: (language: AppSettings["language"]) => Promise<void>;
   setNetworkEnabled: (enabled: boolean) => Promise<void>;
+  setAccessLevel: (level: AppSettings["permissions"]["accessLevel"]) => Promise<void>;
   setProfileMode: (mode: AppSettings["profile"]["mode"]) => Promise<void>;
   setManualProfile: (profileId: ProviderProfileId) => Promise<void>;
 };
@@ -62,6 +63,18 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     const next = {
       ...current,
       network: { ...current.network, enabled },
+    };
+    set({ settings: next });
+    await safePersistSettings(next);
+  },
+  setAccessLevel: async (level) => {
+    const current = get().settings;
+    if (current.permissions.accessLevel === level) {
+      return;
+    }
+    const next = {
+      ...current,
+      permissions: { ...current.permissions, accessLevel: level },
     };
     set({ settings: next });
     await safePersistSettings(next);
@@ -108,6 +121,12 @@ export const setSettingsNetworkEnabled = async (
   enabled: boolean,
 ): Promise<void> => {
   await useSettingsStore.getState().setNetworkEnabled(enabled);
+};
+
+export const setSettingsAccessLevel = async (
+  level: AppSettings["permissions"]["accessLevel"],
+): Promise<void> => {
+  await useSettingsStore.getState().setAccessLevel(level);
 };
 
 export const setSettingsProfileMode = async (

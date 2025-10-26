@@ -1,15 +1,15 @@
 use std::{
     collections::HashMap,
-    env,
-    fs,
+    env, fs,
     io::{BufRead, BufReader, Write},
     path::{Component, Path, PathBuf},
     process::Command,
     thread,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
+use sysinfo::{CpuExt, DiskExt, System, SystemExt};
 use tauri::Manager;
 
 type McpResult<T> = Result<T, String>;
@@ -17,26 +17,12 @@ type McpResult<T> = Result<T, String>;
 const SAFE_ORBIT_RELATIVE: &str = "Documentos/CerebroProjects";
 const BLOCKED_GIT_SUBCOMMANDS: &[&str] = &["push", "pull", "fetch", "remote", "clone"]; // remote operations disabled offline
 const ALLOWED_SHELL_COMMANDS: &[&str] = &[
-    "ls",
-    "cat",
-    "tail",
-    "pwd",
-    "npm",
-    "pnpm",
-    "yarn",
-    "npx",
-    "node",
-    "deno",
-    "cargo",
-    "go",
-    "python",
-    "pip",
-    "pip3",
-    "just",
-    "make",
-    "rg",
+    "ls", "cat", "tail", "pwd", "npm", "pnpm", "yarn", "npx", "node", "deno", "cargo", "go",
+    "python", "pip", "pip3", "just", "make", "rg",
 ];
 const DEFAULT_SHELL_TIMEOUT_MS: u64 = 60_000;
+const MAX_METRICS_FILE_SIZE: u64 = 2 * 1024 * 1024; // 2 MiB
+const MAX_METRICS_FILE_AGE_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
 
 #[derive(Serialize)]
 struct FileEntry {
@@ -106,6 +92,8 @@ struct MemoryInfo {
     total: u64,
     used: u64,
     free: u64,
+    #[serde(rename = "usagePercent", skip_serializing_if = "Option::is_none")]
+    usage_percent: Option<f32>,
     #[serde(rename = "swapTotal")]
     swap_total: u64,
     #[serde(rename = "swapUsed")]
@@ -114,10 +102,21 @@ struct MemoryInfo {
 
 #[derive(Serialize)]
 struct CpuInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
     #[serde(rename = "logicalCores")]
     logical_cores: usize,
     #[serde(rename = "globalUsage", skip_serializing_if = "Option::is_none")]
     global_usage: Option<f32>,
+}
+
+#[derive(Serialize)]
+struct DiskInfo {
+    mount: String,
+    total: u64,
+    free: u64,
+    #[serde(rename = "usagePercent", skip_serializing_if = "Option::is_none")]
+    usage_percent: Option<f32>,
 }
 
 #[derive(Serialize)]
@@ -135,6 +134,8 @@ struct SystemInfoResponse {
     memory: MemoryInfo,
     cpu: CpuInfo,
     #[serde(skip_serializing_if = "Option::is_none")]
+    disk: Option<DiskInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     uptime: Option<u64>,
     #[serde(rename = "processCount", skip_serializing_if = "Option::is_none")]
     process_count: Option<usize>,
@@ -149,16 +150,35 @@ struct SystemPathsResponse {
 
 #[derive(Serialize, Deserialize)]
 struct MetricsEntry {
-    timestamp: u64,
+    #[serde(alias = "timestamp")]
+    ts: u64,
     mode: String,
     provider: String,
-    #[serde(rename = "latencyMs", skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(
+        rename = "latency_ms",
+        alias = "latencyMs",
+        skip_serializing_if = "Option::is_none"
+    )]
     latency_ms: Option<u64>,
-    #[serde(rename = "tokensIn", skip_serializing_if = "Option::is_none")]
-    tokens_in: Option<u32>,
-    #[serde(rename = "tokensOut", skip_serializing_if = "Option::is_none")]
-    tokens_out: Option<u32>,
+    #[serde(
+        rename = "prompt_tokens",
+        alias = "promptTokens",
+        alias = "tokensIn",
+        skip_serializing_if = "Option::is_none"
+    )]
+    prompt_tokens: Option<u32>,
+    #[serde(
+        rename = "output_tokens",
+        alias = "outputTokens",
+        alias = "tokensOut",
+        skip_serializing_if = "Option::is_none"
+    )]
+    output_tokens: Option<u32>,
     success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 fn safe_root() -> McpResult<PathBuf> {
@@ -236,8 +256,7 @@ fn relative_from_root(root: &Path, target: &Path) -> McpResult<String> {
 }
 
 fn system_time_to_millis(time: SystemTime) -> Option<u64> {
-    time
-        .duration_since(UNIX_EPOCH)
+    time.duration_since(UNIX_EPOCH)
         .ok()
         .map(|duration| duration.as_millis() as u64)
 }
@@ -345,6 +364,79 @@ fn metrics_log_path() -> McpResult<PathBuf> {
     Ok(directory.join("metrics.jsonl"))
 }
 
+fn rotate_metrics_log_if_needed(path: &Path) -> McpResult<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let metadata = fs::metadata(path).map_err(|err| err.to_string())?;
+    let mut should_rotate = metadata.len() > MAX_METRICS_FILE_SIZE;
+
+    if let Ok(modified) = metadata.modified() {
+        if let Ok(age) = SystemTime::now().duration_since(modified) {
+            if age.as_secs() > MAX_METRICS_FILE_AGE_SECS {
+                should_rotate = true;
+            }
+        }
+    }
+
+    if !should_rotate {
+        return Ok(());
+    }
+
+    let directory = path
+        .parent()
+        .ok_or_else(|| "No se pudo resolver el directorio de métricas.".to_string())?;
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+
+    let mut candidate = directory.join(format!("metrics-{}.jsonl", timestamp));
+    let mut index = 1_u32;
+
+    while candidate.exists() {
+        candidate = directory.join(format!("metrics-{}-{}.jsonl", timestamp, index));
+        index += 1;
+    }
+
+    fs::rename(path, &candidate).map_err(|err| err.to_string())
+}
+
+fn disk_info_for_path(system: &System, target: &Path) -> Option<DiskInfo> {
+    let mut selected_index: Option<usize> = None;
+    let mut best_depth = 0_usize;
+
+    for (index, disk) in system.disks().iter().enumerate() {
+        let mount_point = disk.mount_point();
+        if target.starts_with(mount_point) {
+            let depth = mount_point.components().count();
+            if depth > best_depth {
+                best_depth = depth;
+                selected_index = Some(index);
+            }
+        }
+    }
+
+    selected_index.map(|index| {
+        let disk = &system.disks()[index];
+        let total = disk.total_space();
+        let free = disk.available_space();
+        let usage_percent = if total > 0 {
+            Some(((total.saturating_sub(free)) as f64 / total as f64 * 100.0) as f32)
+        } else {
+            None
+        };
+        DiskInfo {
+            mount: disk.mount_point().to_string_lossy().replace('\\', "/"),
+            total,
+            free,
+            usage_percent,
+        }
+    })
+}
+
 const BASE64_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 fn encode_base64(data: &[u8]) -> String {
@@ -383,10 +475,7 @@ fn encode_base64(data: &[u8]) -> String {
 }
 
 fn decode_base64(input: &str) -> McpResult<Vec<u8>> {
-    let cleaned: String = input
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .collect();
+    let cleaned: String = input.chars().filter(|ch| !ch.is_whitespace()).collect();
 
     if cleaned.len() % 4 != 0 {
         return Err("Cadena base64 inválida.".into());
@@ -403,8 +492,8 @@ fn decode_base64(input: &str) -> McpResult<Vec<u8>> {
                 buffer[index] = 0;
                 padding += 1;
             } else {
-                buffer[index] = decode_base64_char(*ch)
-                    .ok_or_else(|| "Cadena base64 inválida.".to_string())?;
+                buffer[index] =
+                    decode_base64_char(*ch).ok_or_else(|| "Cadena base64 inválida.".to_string())?;
             }
         }
 
@@ -450,8 +539,7 @@ fn spawn_command(
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     let root = safe_root()?;
-    let cwd_relative = cwd
-        .and_then(|dir| relative_from_root(&root, &dir).ok());
+    let cwd_relative = cwd.and_then(|dir| relative_from_root(&root, &dir).ok());
 
     Ok(ExecResponse {
         command: command_name,
@@ -494,7 +582,11 @@ fn mcp_files_list(path: Option<String>) -> McpResult<ListResponse> {
             } else {
                 "file".to_string()
             },
-            size: if metadata.is_file() { metadata.len() } else { 0 },
+            size: if metadata.is_file() {
+                metadata.len()
+            } else {
+                0
+            },
             modified_at: modified,
         });
     }
@@ -522,8 +614,9 @@ fn mcp_files_read(path: String, encoding: Option<String>) -> McpResult<ReadRespo
     let content = if encoding_pref.eq_ignore_ascii_case("base64") {
         encode_base64(&data)
     } else {
-        String::from_utf8(data)
-            .map_err(|_| "El archivo no está codificado como UTF-8. Usa encoding base64.".to_string())?
+        String::from_utf8(data).map_err(|_| {
+            "El archivo no está codificado como UTF-8. Usa encoding base64.".to_string()
+        })?
     };
 
     let relative = relative_from_root(&root, &target)?;
@@ -661,7 +754,9 @@ fn is_shell_command_allowed(command: &str) -> bool {
 }
 
 fn has_disallowed_tokens(values: &[String]) -> bool {
-    values.iter().any(|value| value.contains('&') || value.contains('|') || value.contains(';'))
+    values
+        .iter()
+        .any(|value| value.contains('&') || value.contains('|') || value.contains(';'))
 }
 
 #[tauri::command]
@@ -720,38 +815,104 @@ fn mcp_shell_capabilities() -> McpResult<ShellCapabilities> {
 fn mcp_system_info() -> McpResult<SystemInfoResponse> {
     let timestamp_ms = current_timestamp_ms();
     let hostname = read_hostname();
-    let os_name = env::consts::OS.to_string();
-    let os_version = read_uname("-v");
-    let kernel_version = read_uname("-r");
+
+    let mut system = System::new();
+    system.refresh_cpu();
+    system.refresh_memory();
+    system.refresh_disks_list();
+    system.refresh_disks();
+
+    // Give sysinfo a brief moment to collect CPU statistics.
+    thread::sleep(Duration::from_millis(120));
+    system.refresh_cpu();
+
+    let os_name = system.name().unwrap_or_else(|| env::consts::OS.to_string());
+    let os_version = system.long_os_version().or_else(|| read_uname("-v"));
+    let kernel_version = system.kernel_version().or_else(|| read_uname("-r"));
     let architecture = read_uname("-m").or_else(|| Some(env::consts::ARCH.to_string()));
 
-    let cores = thread::available_parallelism().map(|value| value.get()).unwrap_or(0);
-    let mut memory = MemoryInfo {
-        total: 0,
-        used: 0,
-        free: 0,
-        swap_total: 0,
-        swap_used: 0,
+    let logical_cores_sys = system.cpus().len();
+    let logical_cores = if logical_cores_sys > 0 {
+        logical_cores_sys
+    } else {
+        thread::available_parallelism()
+            .map(|value| value.get())
+            .unwrap_or(0)
     };
 
-    if let Some((total, free, available, swap_total, swap_free)) = read_linux_meminfo() {
-        let effective_free = if available > 0 { available } else { free };
-        let used = total.saturating_sub(effective_free);
-        memory = MemoryInfo {
-            total,
-            used,
-            free: effective_free,
-            swap_total,
-            swap_used: swap_total.saturating_sub(swap_free),
-        };
+    let cpu_model = system.cpus().get(0).and_then(|cpu| {
+        let brand = cpu.brand().trim();
+        if brand.is_empty() {
+            None
+        } else {
+            Some(brand.to_string())
+        }
+    });
+
+    let cpu_usage = if logical_cores_sys > 0 {
+        let total_usage: f32 = system.cpus().iter().map(|cpu| cpu.cpu_usage()).sum();
+        Some(total_usage / logical_cores_sys as f32)
+    } else {
+        None
+    };
+
+    let mut total_memory_bytes = system.total_memory().saturating_mul(1024);
+    let mut available_memory_bytes = system.available_memory().saturating_mul(1024);
+    let mut used_memory_bytes = total_memory_bytes.saturating_sub(available_memory_bytes);
+    let mut swap_total_bytes = system.total_swap().saturating_mul(1024);
+    let mut swap_used_bytes = system.used_swap().saturating_mul(1024);
+
+    if total_memory_bytes == 0 {
+        if let Some((total, free, available, swap_total, swap_free)) = read_linux_meminfo() {
+            let effective_free = if available > 0 { available } else { free };
+            total_memory_bytes = total;
+            available_memory_bytes = effective_free;
+            used_memory_bytes = total.saturating_sub(effective_free);
+            swap_total_bytes = swap_total;
+            swap_used_bytes = swap_total.saturating_sub(swap_free);
+        }
     }
 
-    let uptime = read_linux_uptime();
-    let process_count = count_linux_processes();
+    let memory_usage_percent = if total_memory_bytes > 0 {
+        Some((used_memory_bytes as f64 / total_memory_bytes as f64 * 100.0) as f32)
+    } else {
+        None
+    };
+
+    let memory = MemoryInfo {
+        total: total_memory_bytes,
+        used: used_memory_bytes,
+        free: available_memory_bytes,
+        usage_percent: memory_usage_percent,
+        swap_total: swap_total_bytes,
+        swap_used: swap_used_bytes,
+    };
+
+    let orbit_root = safe_root()?;
+    let disk = disk_info_for_path(&system, &orbit_root);
+
+    let uptime = {
+        let seconds = system.uptime();
+        if seconds > 0 {
+            Some(seconds)
+        } else {
+            read_linux_uptime()
+        }
+    };
+
+    let process_count = {
+        let count = system.processes().len();
+        if count > 0 {
+            Some(count)
+        } else {
+            count_linux_processes()
+        }
+    };
 
     let cpu = CpuInfo {
-        logical_cores: cores,
-        global_usage: None,
+        model: cpu_model,
+        logical_cores,
+        global_usage: cpu_usage,
     };
 
     Ok(SystemInfoResponse {
@@ -763,6 +924,7 @@ fn mcp_system_info() -> McpResult<SystemInfoResponse> {
         architecture,
         memory,
         cpu,
+        disk,
         uptime,
         process_count,
     })
@@ -781,13 +943,15 @@ fn mcp_system_paths() -> McpResult<SystemPathsResponse> {
 #[tauri::command]
 fn mcp_metrics_append(entry: MetricsEntry) -> McpResult<()> {
     let path = metrics_log_path()?;
+    rotate_metrics_log_if_needed(&path)?;
     let line = serde_json::to_string(&entry).map_err(|err| err.to_string())?;
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
         .map_err(|err| err.to_string())?;
-    file.write_all(line.as_bytes()).map_err(|err| err.to_string())?;
+    file.write_all(line.as_bytes())
+        .map_err(|err| err.to_string())?;
     file.write_all(b"\n").map_err(|err| err.to_string())?;
     Ok(())
 }
@@ -825,6 +989,39 @@ fn mcp_metrics_tail(limit: Option<usize>) -> McpResult<Vec<MetricsEntry>> {
     }
 
     Ok(entries)
+}
+
+#[tauri::command]
+fn mcp_metrics_clear() -> McpResult<()> {
+    let path = metrics_log_path()?;
+    if path.exists() {
+        fs::remove_file(&path).map_err(|err| err.to_string())?;
+    }
+
+    if let Some(directory) = path.parent() {
+        if directory.exists() {
+            if let Ok(entries) = fs::read_dir(directory) {
+                for entry in entries.flatten() {
+                    let file_path = entry.path();
+                    if !file_path.is_file() {
+                        continue;
+                    }
+                    if let Some(name) = file_path.file_name().and_then(|name| name.to_str()) {
+                        if name.starts_with("metrics-") && name.ends_with(".jsonl") {
+                            if let Err(err) = fs::remove_file(&file_path) {
+                                eprintln!(
+                                    "[metrics] failed to remove archived log {}: {}",
+                                    name, err
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -925,6 +1122,7 @@ pub fn run() {
             mcp_system_paths,
             mcp_metrics_append,
             mcp_metrics_tail,
+            mcp_metrics_clear,
             mcp_tauri_exec,
             mcp_tauri_capabilities
         ])

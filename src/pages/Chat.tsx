@@ -20,6 +20,7 @@ import {
   type StreamingProvider,
   type CompletionHandle,
   type ProviderProfileId,
+  isProviderProfileId,
 } from "../core";
 import { OllamaModelMissingError } from "../core/ai/providers/local/ollama";
 import {
@@ -30,8 +31,14 @@ import { probeLocalOllama } from "../core/ai/detect";
 import {
   executeMcpMethod,
   type MCPExecResult,
+  type MCPMethod,
+  type MCPRequestContext,
   type MCPServerId,
 } from "../core/mcp";
+import {
+  isSensitiveMcpMethod,
+  type McpPermission,
+} from "../core/mcp/permissions";
 import { appendMetric } from "../core/metrics";
 import {
   chooseProfile,
@@ -42,6 +49,8 @@ import {
   getActiveThreadId,
   useChatStore,
 } from "../store/chatStore";
+import { useMcpPermissionsStore } from "../store/mcpPermissionsStore";
+import { MCP_METHOD_LABELS, MCP_SERVER_METADATA } from "../ui/mcpMetadata";
 import { useSettingsStore } from "../store/settingsStore";
 import type { TranslationKey } from "../i18n";
 
@@ -70,29 +79,27 @@ type OllamaStatus = {
   updatedAt: number;
 };
 
-const MCP_ICON_MAP: Record<
-  MCPServerId,
-  { icon: string; label: TranslationKey }
-> = {
-  "mcp.files": { icon: "📁", label: "mcpFilesLabel" },
-  "mcp.git": { icon: "🌿", label: "mcpGitLabel" },
-  "mcp.shell": { icon: "💻", label: "mcpShellLabel" },
-  "mcp.system": { icon: "🖥️", label: "mcpSystemLabel" },
-  "mcp.tauri": { icon: "🪟", label: "mcpTauriLabel" },
-};
 
 const getTime = (): number =>
   typeof performance !== "undefined" && typeof performance.now === "function"
     ? performance.now()
     : Date.now();
 
-const isProfileId = (
-  value: string | null | undefined,
-): value is ProfileId => value === "fast" || value === "balanced" || value === "thoughtful";
-
 const resolveProfileId = (
   candidate: string | null | undefined,
-): ProfileId => (isProfileId(candidate) ? candidate : DEFAULT_PROFILE_ID);
+): ProfileId =>
+  isProviderProfileId(candidate) ? candidate : DEFAULT_PROFILE_ID;
+
+const resolveProviderLabel = (runtime: RuntimeStatus): string => {
+  switch (runtime) {
+    case "local":
+      return "ollama";
+    case "remote":
+      return "deepseek";
+    default:
+      return "memory";
+  }
+};
 
 const sortByDate = <T extends { createdAt: string }>(collection: T[]): T[] =>
   [...collection].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -214,6 +221,8 @@ const buildSystemPrompt = (
         "Responde en español, clara y en 2-4 párrafos. Añade un ejemplo corto si ayuda. Evita listas innecesarias.",
       thoughtful:
         "Responde en español, con profundidad y ejemplos cuando correspondan. Puedes extenderte si aporta valor. Mantén la coherencia con la última solicitud.",
+      thoughtfulLocal:
+        "Responde en español, con profundidad y ejemplos cuando correspondan. Puedes extenderte si aporta valor. Mantén la coherencia con la última solicitud.",
     },
     en: {
       fast:
@@ -221,6 +230,8 @@ const buildSystemPrompt = (
       balanced:
         "Reply in English, clearly, using 2-4 paragraphs. Add a short example if it helps. Avoid unnecessary lists.",
       thoughtful:
+        "Reply in English with depth and examples when useful. Feel free to elaborate if it adds value. Stay consistent with the latest request.",
+      thoughtfulLocal:
         "Reply in English with depth and examples when useful. Feel free to elaborate if it adds value. Stay consistent with the latest request.",
     },
   } as const;
@@ -311,6 +322,7 @@ export default function Chat({ t }: ChatProps) {
   const [missingModelProfileId, setMissingModelProfileId] = useState<
     string | null
   >(null);
+  const [missingModelSuggestion, setMissingModelSuggestion] = useState<string | null>(null);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>({
     ok: false,
     latencyMs: null,
@@ -331,6 +343,14 @@ export default function Chat({ t }: ChatProps) {
   const networkEnabled = useSettingsStore(
     (state) => state.settings.network.enabled,
   );
+  const accessLevel = useMcpPermissionsStore((state) => state.accessLevel);
+  const getEffectiveMcpPermissions = useMcpPermissionsStore(
+    (state) => state.getEffectivePermissions,
+  );
+  const getBlockedMcpPermissions = useMcpPermissionsStore(
+    (state) => state.getBlockedPermissions,
+  );
+  const isMcpAllowed = useMcpPermissionsStore((state) => state.isAllowed);
 
   const profileMode = profileSettings.mode;
   const manualProfileId = resolveProfileId(profileSettings.manualId);
@@ -346,59 +366,10 @@ export default function Chat({ t }: ChatProps) {
 
   useEffect(() => {
     let cancelled = false;
-    let intervalId: number | undefined;
-
-    const probe = async () => {
-      try {
-        if (!cancelled) {
-          setIsProbingOllama(true);
-        }
-        const result = await probeLocalOllama();
-        if (cancelled) {
-          return;
-        }
-        setOllamaStatus({
-          ok: result.ok,
-          latencyMs: result.latencyMs,
-          error: result.error,
-          updatedAt: Date.now(),
-        });
-      } catch (error) {
-        if (cancelled) {
-          return;
-        }
-        setOllamaStatus({
-          ok: false,
-          latencyMs: null,
-          error: error instanceof Error ? error.message : String(error),
-          updatedAt: Date.now(),
-        });
-      } finally {
-        if (!cancelled) {
-          setIsProbingOllama(false);
-        }
-      }
-    };
-
-    void probe();
-    intervalId = window.setInterval(() => {
-      void probe();
-    }, 20000);
-
-    return () => {
-      cancelled = true;
-      if (intervalId !== undefined) {
-        window.clearInterval(intervalId);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
 
     const loadPaths = async () => {
       try {
-        const result = (await executeMcpMethod(
+        const result = await callMcp<{ home?: string; safeOrbit?: string }>(
           "mcp.system",
           "info",
           { topic: "paths" },
@@ -407,7 +378,7 @@ export default function Chat({ t }: ChatProps) {
             requireConfirmation: false,
             summary: "system-paths",
           },
-        )) as { home?: string; safeOrbit?: string };
+        );
 
         if (cancelled) {
           return;
@@ -438,25 +409,45 @@ export default function Chat({ t }: ChatProps) {
     [activeProfileId],
   );
 
-  const canUseShell = useMemo(
-    () =>
-      activeProfile?.mcpAccess?.some(
-        (rule) => rule.serverId === "mcp.shell" && rule.methods.includes("exec"),
-      ) ?? false,
-    [activeProfile],
+  const allowedMcpRules = useMemo<McpPermission[]>(
+    () => getEffectiveMcpPermissions(activeProfileId),
+    [activeProfileId, getEffectiveMcpPermissions, accessLevel],
   );
 
-  const activeMcpIndicators = useMemo(
+  const blockedMcpRules = useMemo<McpPermission[]>(
+    () => getBlockedMcpPermissions(activeProfileId),
+    [activeProfileId, getBlockedMcpPermissions, accessLevel],
+  );
+
+  const canUseShell = useMemo(
     () =>
-      (activeProfile?.mcpAccess ?? []).map((rule) => {
-        const info = MCP_ICON_MAP[rule.serverId];
-        return {
-          id: rule.serverId,
-          icon: info?.icon ?? "🛠️",
-          label: info?.label ?? "mcpGenericLabel",
-        };
-      }),
-    [activeProfile],
+      allowedMcpRules.some(
+        (rule) => rule.serverId === "mcp.shell" && rule.methods.includes("exec"),
+      ),
+    [allowedMcpRules],
+  );
+
+  const mcpIndicatorGroups = useMemo(
+    () => {
+      const toIndicator = (rules: McpPermission[], blocked: boolean) =>
+        rules.map((rule) => {
+          const info = MCP_SERVER_METADATA[rule.serverId];
+          return {
+            id: `${rule.serverId}-${blocked ? "blocked" : "allowed"}`,
+            serverId: rule.serverId,
+            icon: info?.icon ?? "🛠️",
+            label: info?.label ?? "mcpGenericLabel",
+            methods: rule.methods,
+            blocked,
+          };
+        });
+
+      return {
+        allowed: toIndicator(allowedMcpRules, false),
+        blocked: toIndicator(blockedMcpRules, true),
+      };
+    },
+    [allowedMcpRules, blockedMcpRules],
   );
 
   const resolveProfileForRuntime = useCallback(
@@ -473,12 +464,18 @@ export default function Chat({ t }: ChatProps) {
       );
 
       if (runtime === "local") {
-        if (candidateProfile?.runtime === "local" && candidateProfile.model) {
-          return { profileId: candidateId, model: candidateProfile.model };
+        const localCandidateId: ProfileId =
+          candidateId === "thoughtful" && getModelProfileById("thoughtfulLocal")
+            ? "thoughtfulLocal"
+            : candidateId;
+        const localCandidateProfile = getModelProfileById(localCandidateId);
+
+        if (localCandidateProfile?.runtime === "local" && localCandidateProfile.model) {
+          return { profileId: localCandidateId, model: localCandidateProfile.model };
         }
 
         const fallbackProfile =
-          fallbackLocal ?? candidateProfile ?? fallbackRemote;
+          fallbackLocal ?? localCandidateProfile ?? candidateProfile ?? fallbackRemote;
         const fallbackId = resolveProfileId(fallbackProfile?.id);
 
         return {
@@ -532,6 +529,201 @@ export default function Chat({ t }: ChatProps) {
       }
     };
   }, []);
+
+  const confirmSensitiveMcp = useCallback(
+    (
+      serverId: MCPServerId,
+      method: MCPMethod,
+      context: MCPRequestContext,
+    ): boolean => {
+      const serverInfo = MCP_SERVER_METADATA[serverId];
+      const methodLabelKey = MCP_METHOD_LABELS[method] ?? "mcpGenericLabel";
+      const serverLabel = serverInfo ? t(serverInfo.label) : serverId;
+      const methodLabel = t(methodLabelKey);
+      const profileLabel = getModelProfileById(context.profileId)?.label;
+      const lines = [
+        t("mcpConfirmTitle"),
+        "",
+        `${t("mcpConfirmServer")} ${serverLabel}`,
+        `${t("mcpConfirmMethod")} ${methodLabel}`,
+      ];
+      if (profileLabel) {
+        lines.push(`${t("mcpConfirmProfile")} ${t(profileLabel)}`);
+      }
+      if (context.summary) {
+        lines.push(`${t("mcpConfirmSummary")} ${context.summary}`);
+      }
+      lines.push("", t("mcpConfirmQuestion"));
+      return window.confirm(lines.join("\n"));
+    },
+    [t],
+  );
+
+  const callMcp = useCallback(
+    async <TResult,>(
+      serverId: MCPServerId,
+      method: MCPMethod,
+      params: Record<string, unknown> | undefined,
+      context: MCPRequestContext,
+    ): Promise<TResult> => {
+      const resolvedProfileId = resolveProfileId(context.profileId);
+
+      if (!isMcpAllowed(resolvedProfileId, serverId, method)) {
+        throw new Error(t("mcpPermissionDenied"));
+      }
+
+      const shouldConfirm =
+        isSensitiveMcpMethod(serverId, method) &&
+        context.requireConfirmation !== false;
+
+      if (shouldConfirm) {
+        const accepted = confirmSensitiveMcp(serverId, method, {
+          ...context,
+          profileId: resolvedProfileId,
+        });
+        if (!accepted) {
+          throw new Error(t("mcpActionCancelled"));
+        }
+      }
+
+      try {
+        const result = (await executeMcpMethod(
+          serverId,
+          method,
+          params,
+          {
+            ...context,
+            profileId: resolvedProfileId,
+          },
+        )) as TResult;
+        return result;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error);
+        const normalized = message
+          .normalize("NFD")
+          .replace(/\p{Diacritic}/gu, "")
+          .toLowerCase();
+        if (normalized.includes("orbita segura")) {
+          throw new Error(t("mcpOrbitViolation"));
+        }
+        throw error;
+      }
+    },
+    [confirmSensitiveMcp, isMcpAllowed, t],
+  );
+
+  const handleTestProfile = useCallback(
+    async (profileId: ProviderProfileId) => {
+      const provider = providerRef.current;
+      if (!provider) {
+        showToast(t("completionError"));
+        return;
+      }
+
+      const { profileId: effectiveProfileId, model: resolvedModel } =
+        resolveProfileForRuntime(profileId, runtimeMode);
+
+      const prompt = t("modelTestPrompt");
+      const startedAt = getTime();
+
+      try {
+        const completion = provider.complete({
+          prompt,
+          model: resolvedModel,
+          system: undefined,
+          profileId: effectiveProfileId,
+          temperature: 0,
+          maxOutputTokens: 32,
+          contextTokens: 512,
+        });
+
+        await completion.response;
+
+        const latencyMs = Math.max(0, Math.round(getTime() - startedAt));
+        const usedModel = completion.model ?? resolvedModel;
+
+        showToast(
+          t("modelTestSuccess")
+            .replace("{{model}}", usedModel)
+            .replace("{{latency}}", `${latencyMs}`),
+        );
+        setMissingModelProfileId(null);
+        setMissingModelSuggestion(null);
+      } catch (error) {
+        if (error instanceof OllamaModelMissingError) {
+          setMissingModelProfileId(profileId);
+          setMissingModelSuggestion(error.recommendations[0] ?? resolvedModel);
+        }
+
+        const message =
+          error instanceof Error && error.message
+            ? error.message
+            : t("completionError");
+        showToast(message);
+      }
+    },
+    [resolveProfileForRuntime, runtimeMode, showToast, t],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    let intervalId: number | undefined;
+
+    const probe = async () => {
+      try {
+        if (!cancelled) {
+          setIsProbingOllama(true);
+        }
+        const result = await probeLocalOllama();
+        if (cancelled) {
+          return;
+        }
+        setOllamaStatus({
+          ok: result.ok,
+          latencyMs: result.latencyMs,
+          error: result.error,
+          updatedAt: Date.now(),
+        });
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setOllamaStatus({
+          ok: false,
+          latencyMs: null,
+          error: error instanceof Error ? error.message : String(error),
+          updatedAt: Date.now(),
+        });
+      } finally {
+        if (!cancelled) {
+          setIsProbingOllama(false);
+        }
+      }
+    };
+
+    void probe();
+    intervalId = window.setInterval(() => {
+      void probe();
+    }, 20000);
+
+    return () => {
+      cancelled = true;
+      if (intervalId !== undefined) {
+        window.clearInterval(intervalId);
+      }
+    };
+  }, []);
+
+  const formatMcpMethods = useCallback(
+    (methods: MCPMethod[]): string =>
+      methods
+        .map((method) =>
+          t(MCP_METHOD_LABELS[method] ?? "mcpGenericLabel"),
+        )
+        .join(" · "),
+    [t],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -767,7 +959,7 @@ export default function Chat({ t }: ChatProps) {
 
     try {
       setIsProbingOllama(true);
-      await executeMcpMethod(
+      await callMcp<MCPExecResult>(
         "mcp.shell",
         "exec",
         {
@@ -808,7 +1000,7 @@ export default function Chat({ t }: ChatProps) {
     const logPath = `${systemPaths.home}/.ollama/logs/serve.log`;
 
     try {
-      const result = (await executeMcpMethod(
+      const result = await callMcp<MCPExecResult>(
         "mcp.shell",
         "exec",
         {
@@ -820,7 +1012,7 @@ export default function Chat({ t }: ChatProps) {
           requireConfirmation: true,
           summary: "view-ollama-logs",
         },
-      )) as MCPExecResult;
+      );
 
       const output = result.stdout.trim();
       const message = output.length > 0 ? output : t("ollamaLogsEmpty");
@@ -950,6 +1142,7 @@ export default function Chat({ t }: ChatProps) {
         .then(async (finalText) => {
           console.log("[chat] completion received");
           setMissingModelProfileId(null);
+          setMissingModelSuggestion(null);
           if (getActiveThreadId() !== threadId) {
             return;
           }
@@ -973,14 +1166,16 @@ export default function Chat({ t }: ChatProps) {
           setMessages(sortByDate(updatedMessages));
 
           const latencyMs = Math.max(0, Math.round(getTime() - completionStartedAt));
+          const usedModel = completion.model ?? targetModel;
           const tokensOut = estimateTokenCount(finalText);
           void appendMetric({
-            timestamp: Date.now(),
+            ts: Date.now(),
             mode: profileId,
-            provider: targetModel ?? runtimeMode,
+            provider: resolveProviderLabel(runtimeMode),
+            model: usedModel,
             latencyMs,
-            tokensIn,
-            tokensOut,
+            promptTokens: tokensIn,
+            outputTokens: tokensOut,
             success: true,
           });
         })
@@ -988,9 +1183,10 @@ export default function Chat({ t }: ChatProps) {
           if (isAbortError(error)) {
             console.log("[chat] completion aborted");
           } else if (error instanceof OllamaModelMissingError) {
-            if (runtimeMode === "local") {
-              setMissingModelProfileId(profileId);
-            }
+            setMissingModelProfileId(profileId);
+            setMissingModelSuggestion(
+              error.recommendations[0] ?? targetModel,
+            );
             showToast(error.message);
           } else {
             console.error("Failed to complete assistant message", error);
@@ -998,6 +1194,7 @@ export default function Chat({ t }: ChatProps) {
               error instanceof Error && error.message
                 ? error.message
                 : t("completionError");
+            setMissingModelSuggestion(null);
             showToast(message);
           }
 
@@ -1010,14 +1207,23 @@ export default function Chat({ t }: ChatProps) {
           );
 
           const latencyMs = Math.max(0, Math.round(getTime() - completionStartedAt));
+          const errorMessage =
+            error instanceof Error && error.message
+              ? error.message
+              : typeof error === "string"
+                ? error
+                : t("completionError");
+          const usedModel = completion.model ?? targetModel;
           void appendMetric({
-            timestamp: Date.now(),
+            ts: Date.now(),
             mode: profileId,
-            provider: targetModel ?? runtimeMode,
+            provider: resolveProviderLabel(runtimeMode),
+            model: usedModel,
             latencyMs,
-            tokensIn,
-            tokensOut: 0,
+            promptTokens: tokensIn,
+            outputTokens: 0,
             success: false,
+            error: errorMessage,
           });
         })
         .finally(() => {
@@ -1327,7 +1533,9 @@ export default function Chat({ t }: ChatProps) {
               onSend={handleSendMessage}
               runtime={runtimeMode}
               missingProfileId={missingModelProfileId}
+              missingModelSuggestion={missingModelSuggestion}
               activeProfileId={activeProfileId}
+              onTestProfile={handleTestProfile}
               t={t}
             />
           </div>
@@ -1338,23 +1546,55 @@ export default function Chat({ t }: ChatProps) {
           {toastMessage}
         </div>
       )}
-      {activeMcpIndicators.length > 0 && (
+      {(mcpIndicatorGroups.allowed.length > 0 ||
+        mcpIndicatorGroups.blocked.length > 0) && (
         <div className="pointer-events-none fixed bottom-6 left-6 z-40 flex flex-col gap-2">
           <div className="pointer-events-none rounded-2xl border border-slate-500/30 bg-slate-900/80 px-3 py-2 text-[10px] uppercase tracking-[0.3em] text-slate-300 shadow-lg shadow-black/40">
             <span className="block text-[11px] font-semibold text-slate-400">
               {t("mcpPanelTitle")}
             </span>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {activeMcpIndicators.map((indicator) => (
-                <span
-                  key={indicator.id}
-                  className="pointer-events-auto flex items-center gap-1 rounded-full border border-slate-500/30 bg-slate-800/60 px-2 py-[2px] text-[11px] font-semibold text-slate-200"
-                >
-                  <span>{indicator.icon}</span>
-                  <span>{t(indicator.label)}</span>
+            {mcpIndicatorGroups.allowed.length > 0 && (
+              <div className="mt-2">
+                <span className="text-[10px] uppercase tracking-[0.3em] text-emerald-300">
+                  {t("mcpActiveSection")}
                 </span>
-              ))}
-            </div>
+                <div className="mt-1 flex flex-wrap gap-2">
+                  {mcpIndicatorGroups.allowed.map((indicator) => (
+                    <span
+                      key={indicator.id}
+                      className="pointer-events-auto flex items-center gap-1 rounded-full border border-emerald-400/40 bg-emerald-500/15 px-2 py-[2px] text-[11px] font-semibold text-emerald-200"
+                    >
+                      <span>{indicator.icon}</span>
+                      <span>{t(indicator.label)}</span>
+                      <span className="text-[10px] font-normal uppercase tracking-[0.2em] text-emerald-200/80">
+                        {formatMcpMethods(indicator.methods)}
+                      </span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {mcpIndicatorGroups.blocked.length > 0 && (
+              <div className="mt-3 border-t border-slate-700/40 pt-2">
+                <span className="text-[10px] uppercase tracking-[0.3em] text-amber-300">
+                  {t("mcpBlockedSection")}
+                </span>
+                <div className="mt-1 flex flex-wrap gap-2">
+                  {mcpIndicatorGroups.blocked.map((indicator) => (
+                    <span
+                      key={indicator.id}
+                      className="pointer-events-auto flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-[2px] text-[11px] font-semibold text-amber-200"
+                    >
+                      <span>{indicator.icon}</span>
+                      <span>{t(indicator.label)}</span>
+                      <span className="text-[10px] font-normal uppercase tracking-[0.2em] text-amber-200/80">
+                        {formatMcpMethods(indicator.methods)}
+                      </span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

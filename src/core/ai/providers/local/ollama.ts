@@ -45,13 +45,20 @@ type ReasoningOverrides = {
 
 export class OllamaModelMissingError extends Error {
   readonly model: string;
+  readonly recommendations: string[];
 
-  constructor(model: string) {
-    super(
-      `No tenés este modelo. Ejecutá: ollama pull ${model} o elegí otro perfil.`,
-    );
+  constructor(model: string, recommendations?: string[]) {
+    const normalizedSuggestions = (recommendations ?? [])
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0);
+    const suggestion = normalizedSuggestions[0];
+    const message = suggestion
+      ? `No tenés este modelo. Ejecutá: ollama pull ${suggestion}.`
+      : `No tenés este modelo. Ejecutá: ollama pull ${model} o elegí otro perfil.`;
+    super(message);
     this.name = "OllamaModelMissingError";
     this.model = model;
+    this.recommendations = normalizedSuggestions;
   }
 }
 
@@ -80,7 +87,36 @@ const PROFILE_EXTRA_TUNING: Partial<Record<ProviderProfileId, OllamaRequestOptio
     repeat_penalty: 1.04,
     repeat_last_n: 160,
   },
+  thoughtfulLocal: {
+    top_p: 0.88,
+    repeat_penalty: 1.04,
+    repeat_last_n: 160,
+  },
 };
+
+const PROFILE_MODEL_FALLBACKS: Partial<Record<ProviderProfileId, string[]>> = {
+  fast: ["llama3.2:3b", "qwen2.5:3b-instruct", "mistral"],
+  balanced: ["mistral", "qwen2.5:3b-instruct", "llama3.2:3b"],
+  thoughtfulLocal: ["mistral", "qwen2.5:3b-instruct", "llama3.2:3b"],
+};
+
+type InstalledModelsInfo = {
+  names: Set<string>;
+  raw: string[];
+};
+
+const MODEL_CACHE_TTL_MS = 15_000;
+const DEFAULT_COMPLETION_TIMEOUT_MS = 45_000;
+const PROFILE_TIMEOUTS_MS: Partial<Record<ProviderProfileId, number>> = {
+  fast: 8_000,
+  balanced: 20_000,
+  thoughtful: 60_000,
+  thoughtfulLocal: 60_000,
+};
+
+let lastKnownLocalModels: string[] = [];
+
+export const getCachedLocalModels = (): string[] => [...lastKnownLocalModels];
 
 const getTunedOptionsForModel = (
   model: string,
@@ -218,10 +254,16 @@ export const createOllamaProvider = ({
     );
   }
 
-  const ensureModelIsAvailable = async (
-    modelName: string,
+  let cachedModels: { timestamp: number; info: InstalledModelsInfo } | null = null;
+
+  const fetchInstalledModels = async (
     signal: AbortSignal,
-  ): Promise<void> => {
+  ): Promise<InstalledModelsInfo> => {
+    const now = Date.now();
+    if (cachedModels && now - cachedModels.timestamp < MODEL_CACHE_TTL_MS) {
+      return cachedModels.info;
+    }
+
     let response: Response;
     try {
       response = await fetch(`${preparedBase}${TAGS_ENDPOINT}`, {
@@ -274,24 +316,64 @@ export const createOllamaProvider = ({
     }
 
     const models = data.models ?? [];
-    const targetNames = new Set(
-      [modelName, `${modelName}:latest`]
-        .map((entry) => entry.toLowerCase())
-        .filter(Boolean),
-    );
+    const names = new Set<string>();
+    const rawSet = new Set<string>();
 
-    const hasModel = models.some((entry) => {
-      const name = entry.name ?? entry.model;
-      if (!name) {
-        return false;
+    for (const entry of models) {
+      const candidates = [entry.name, entry.model]
+        .map((value) => (value ?? "").trim())
+        .filter((value) => value.length > 0);
+
+      for (const candidate of candidates) {
+        rawSet.add(candidate);
+        names.add(candidate.toLowerCase());
+        names.add(`${candidate.toLowerCase()}:latest`);
       }
-      return targetNames.has(name.toLowerCase());
-    });
-
-    if (!hasModel) {
-      console.warn("[ai] model-missing", { model: modelName });
-      throw new OllamaModelMissingError(modelName);
     }
+
+    const info: InstalledModelsInfo = {
+      names,
+      raw: Array.from(rawSet.values()),
+    };
+
+    cachedModels = { timestamp: now, info };
+    lastKnownLocalModels = info.raw.slice();
+
+    return info;
+  };
+
+  const selectModelForProfile = async (
+    desiredModel: string,
+    profileId: ProviderProfileId | undefined,
+    signal: AbortSignal,
+  ): Promise<string> => {
+    const installed = await fetchInstalledModels(signal);
+    const candidates = [
+      desiredModel,
+      ...((profileId && PROFILE_MODEL_FALLBACKS[profileId]) ?? []),
+    ];
+
+    const seen = new Set<string>();
+    for (const candidateRaw of candidates) {
+      const candidate = candidateRaw.trim();
+      if (!candidate) {
+        continue;
+      }
+      const key = candidate.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+
+      if (
+        installed.names.has(key) ||
+        installed.names.has(`${key}:latest`)
+      ) {
+        return candidate;
+      }
+    }
+
+    throw new OllamaModelMissingError(desiredModel, candidates);
   };
 
   const complete = ({
@@ -315,6 +397,12 @@ export const createOllamaProvider = ({
       );
     }
 
+    const handle: CompletionHandle = {
+      controller,
+      response: Promise.resolve(""),
+      model: resolvedModel,
+    };
+
     const send = async (): Promise<string> => {
       if (!prompt.trim()) {
         throw new Error(
@@ -322,162 +410,187 @@ export const createOllamaProvider = ({
         );
       }
 
-      await ensureModelIsAvailable(resolvedModel, controller.signal);
+      const selectedModel = await selectModelForProfile(
+        resolvedModel,
+        profileId,
+        controller.signal,
+      );
 
-      const tunedOptions = getTunedOptionsForModel(resolvedModel, profileId, {
-        temperature,
-        maxOutputTokens,
-        contextTokens,
-      });
-
-      const bodyPayload = {
-        model: resolvedModel,
-        prompt,
-        stream: true,
-        system: system?.trim() || undefined,
-        options: tunedOptions ?? undefined,
-      };
-
-      let response: Response;
-      try {
-        response = await fetch(`${preparedBase}${GENERATE_ENDPOINT}`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(bodyPayload),
-          signal: controller.signal,
+      if (selectedModel.toLowerCase() !== resolvedModel.toLowerCase()) {
+        console.warn("[ai] model-fallback", {
+          requested: resolvedModel,
+          selected: selectedModel,
+          profileId,
         });
-      } catch (error) {
-        if (isAbortError(error)) {
-          throw error;
-        }
-
-        throw new Error(
-          normalizeErrorMessage(
-            "No se pudo conectar con Ollama. Verifica que el servicio esté en ejecución (`ollama serve`)",
-            error instanceof Error ? error.message : null,
-          ),
-        );
       }
 
-      if (!response.ok) {
-        let errorMessage: string | null = null;
-        try {
-          const data = (await response.json()) as { error?: string };
-          errorMessage = data?.error ?? null;
-        } catch {
-          try {
-            errorMessage = await response.text();
-          } catch {
-            errorMessage = null;
-          }
-        }
+      handle.model = selectedModel;
 
-        const baseMessage = `Ollama devolvió un error (${response.status} ${response.statusText})`;
-
-        throw new Error(
-          normalizeErrorMessage(baseMessage, errorMessage),
+      const timeoutMs =
+        (profileId && PROFILE_TIMEOUTS_MS[profileId]) ??
+        DEFAULT_COMPLETION_TIMEOUT_MS;
+      const timeoutHandle = setTimeout(() => {
+        controller.abort(
+          typeof DOMException !== "undefined"
+            ? new DOMException("Timed out", "AbortError")
+            : undefined,
         );
-      }
-
-      const body = response.body;
-      if (!body) {
-        throw new Error(
-          "Ollama devolvió una respuesta vacía al generar texto.",
-        );
-      }
-
-      const reader = body.getReader();
-      const decoder = new TextDecoder("utf-8");
-
-      let accumulated = "";
-      let buffer = "";
-      let isDone = false;
-
-      const processLine = (line: string) => {
-        try {
-          const parsed = JSON.parse(line) as OllamaResponseChunk;
-
-          if (parsed.error) {
-            throw new Error(
-              normalizeErrorMessage(
-                "Ollama reportó un error al generar la respuesta",
-                parsed.error,
-              ),
-            );
-          }
-
-          const piece = parsed.response ?? "";
-          if (piece) {
-            accumulated += piece;
-            onToken?.(piece);
-          }
-
-          if (parsed.done) {
-            isDone = true;
-          }
-        } catch (error) {
-          console.warn("[ollama] No se pudo procesar el chunk", {
-            line,
-            error,
-          });
-        }
-      };
+      }, timeoutMs);
 
       try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            break;
+        const tunedOptions = getTunedOptionsForModel(selectedModel, profileId, {
+          temperature,
+          maxOutputTokens,
+          contextTokens,
+        });
+
+        const bodyPayload = {
+          model: selectedModel,
+          prompt,
+          stream: true,
+          system: system?.trim() || undefined,
+          options: tunedOptions ?? undefined,
+        };
+
+        let response: Response;
+        try {
+          response = await fetch(`${preparedBase}${GENERATE_ENDPOINT}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(bodyPayload),
+            signal: controller.signal,
+          });
+        } catch (error) {
+          if (isAbortError(error)) {
+            throw error;
           }
-          buffer += decoder.decode(value, { stream: true });
-          let newlineIndex = buffer.indexOf("\n");
 
-          while (newlineIndex !== -1) {
-            const rawLine = buffer.slice(0, newlineIndex).trim();
-            buffer = buffer.slice(newlineIndex + 1);
+          throw new Error(
+            normalizeErrorMessage(
+              "No se pudo conectar con Ollama. Verifica que el servicio esté en ejecución (`ollama serve`)",
+              error instanceof Error ? error.message : null,
+            ),
+          );
+        }
 
-            if (rawLine) {
-              processLine(rawLine);
+        if (!response.ok) {
+          let errorMessage: string | null = null;
+          try {
+            const data = (await response.json()) as { error?: string };
+            errorMessage = data?.error ?? null;
+          } catch {
+            try {
+              errorMessage = await response.text();
+            } catch {
+              errorMessage = null;
+            }
+          }
+
+          const baseMessage = `Ollama devolvió un error (${response.status} ${response.statusText})`;
+
+          throw new Error(
+            normalizeErrorMessage(baseMessage, errorMessage),
+          );
+        }
+
+        const body = response.body;
+        if (!body) {
+          throw new Error(
+            "Ollama devolvió una respuesta vacía al generar texto.",
+          );
+        }
+
+        const reader = body.getReader();
+        const decoder = new TextDecoder("utf-8");
+
+        let accumulated = "";
+        let buffer = "";
+        let isDone = false;
+
+        const processLine = (line: string) => {
+          try {
+            const parsed = JSON.parse(line) as OllamaResponseChunk;
+
+            if (parsed.error) {
+              throw new Error(
+                normalizeErrorMessage(
+                  "Ollama reportó un error al generar la respuesta",
+                  parsed.error,
+                ),
+              );
+            }
+
+            const piece = parsed.response ?? "";
+            if (piece) {
+              accumulated += piece;
+              onToken?.(piece);
+            }
+
+            if (parsed.done) {
+              isDone = true;
+            }
+          } catch (error) {
+            console.warn("[ollama] No se pudo procesar el chunk", {
+              line,
+              error,
+            });
+          }
+        };
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              break;
+            }
+            buffer += decoder.decode(value, { stream: true });
+            let newlineIndex = buffer.indexOf("\n");
+
+            while (newlineIndex !== -1) {
+              const rawLine = buffer.slice(0, newlineIndex).trim();
+              buffer = buffer.slice(newlineIndex + 1);
+
+              if (rawLine) {
+                processLine(rawLine);
+              }
+
+              if (isDone) {
+                break;
+              }
+
+              newlineIndex = buffer.indexOf("\n");
             }
 
             if (isDone) {
               break;
             }
-
-            newlineIndex = buffer.indexOf("\n");
           }
 
-          if (isDone) {
-            break;
+          if (!isDone) {
+            const tail = buffer.trim();
+            if (tail) {
+              processLine(tail);
+            }
           }
-        }
-
-        if (!isDone) {
-          const tail = buffer.trim();
-          if (tail) {
-            processLine(tail);
+        } catch (error) {
+          if (!isAbortError(error)) {
+            throw error;
           }
-        }
-      } catch (error) {
-        if (!isAbortError(error)) {
           throw error;
+        } finally {
+          reader.releaseLock();
         }
-        throw error;
+
+        return accumulated;
       } finally {
-        reader.releaseLock();
+        clearTimeout(timeoutHandle);
       }
-
-      return accumulated;
     };
 
-    const responsePromise = send();
-
-    return {
-      controller,
-      response: responsePromise,
-    };
+    handle.response = send();
+    return handle;
   };
 
   const provider: StreamingProvider = {

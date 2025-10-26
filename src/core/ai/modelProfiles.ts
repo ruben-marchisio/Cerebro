@@ -36,7 +36,7 @@ const profiles: ModelProfile[] = [
     id: "fast",
     label: "modelProfileFastLabel",
     description: "modelProfileFastDescription",
-    model: "llama3.2:3b-instruct",
+    model: "llama3.2:3b",
     runtime: "local",
     icon: "🌀",
     reasoning: {
@@ -102,6 +102,49 @@ const profiles: ModelProfile[] = [
       },
     },
     requiresAdvanced: true,
+    mcpAccess: [
+      {
+        serverId: "mcp.files",
+        methods: ["list", "read", "write", "info"],
+      },
+      {
+        serverId: "mcp.git",
+        methods: ["exec", "info"],
+      },
+      {
+        serverId: "mcp.shell",
+        methods: ["exec", "info"],
+      },
+      {
+        serverId: "mcp.system",
+        methods: ["info"],
+      },
+      {
+        serverId: "mcp.tauri",
+        methods: ["exec", "info"],
+      },
+    ],
+  },
+  {
+    id: "thoughtfulLocal",
+    label: "modelProfileThoughtfulLocalLabel",
+    description: "modelProfileThoughtfulLocalDescription",
+    model: "mistral",
+    runtime: "local",
+    icon: "🧩",
+    reasoning: {
+      memoryContext: "arquitecto",
+      thoughtStyle: "planificación profunda",
+      contextTokens: 4096,
+      maxOutputTokens: 4096,
+      temperature: 0.6,
+      maxHistoryMessages: 18,
+      reasoningLevel: "high",
+      systemPrompts: {
+        es: `Actúa como un arquitecto de soluciones estratégico. Responde en español con calma, expone tu razonamiento paso a paso y diseña planes completos para proyectos de desarrollo. Descompone problemas en capas, valida supuestos y prioriza la robustez técnica sin perder claridad humana.`,
+        en: `Act as a strategic solution architect. Reply in English calmly, walk through your reasoning step by step, and design end-to-end plans for development projects. Break problems into layers, validate assumptions, and prioritise technical robustness while staying human and clear.`,
+      },
+    },
     mcpAccess: [
       {
         serverId: "mcp.files",

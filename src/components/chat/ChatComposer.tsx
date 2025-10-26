@@ -4,10 +4,12 @@ import { getEnv } from "../../core";
 import type { RuntimeStatus } from "../../core/ai";
 import {
   getDefaultProfileIdForRuntime,
+  getModelProfileById,
   modelProfiles,
   type ModelProfile,
 } from "../../core/ai/modelProfiles";
 import type { ProviderProfileId } from "../../core/ai/types";
+import { getCachedLocalModels } from "../../core/ai/providers/local/ollama";
 import type { TranslationKey } from "../../i18n";
 import { useSettingsStore } from "../../store/settingsStore";
 
@@ -21,6 +23,8 @@ type ChatComposerProps = {
   runtime: RuntimeStatus;
   missingProfileId?: string | null;
   activeProfileId: ProviderProfileId;
+  missingModelSuggestion?: string | null;
+  onTestProfile: (profileId: ProviderProfileId) => void;
   t: Translator;
 };
 
@@ -31,7 +35,9 @@ export default function ChatComposer({
   onSend,
   runtime,
   missingProfileId = null,
+  missingModelSuggestion = null,
   activeProfileId,
+  onTestProfile,
   t,
 }: ChatComposerProps) {
   const [message, setMessage] = useState("");
@@ -55,8 +61,11 @@ export default function ChatComposer({
   );
 
   const profiles = useMemo<ModelProfile[]>(
-    () => modelProfiles,
-    [],
+    () =>
+      remoteAccessEnabled
+        ? modelProfiles
+        : modelProfiles.filter((profile) => profile.runtime === "local"),
+    [remoteAccessEnabled],
   );
 
   const disabledProfileIds = useMemo(() => {
@@ -84,6 +93,19 @@ export default function ChatComposer({
   const displayProfile = useMemo(
     () => (profileMode === "manual" ? manualProfile : activeProfile ?? manualProfile),
     [activeProfile, manualProfile, profileMode],
+  );
+
+  const missingProfile = useMemo(
+    () =>
+      typeof missingProfileId === "string"
+        ? getModelProfileById(missingProfileId as ProviderProfileId) ?? null
+        : null,
+    [missingProfileId],
+  );
+
+  const installedModels = useMemo(
+    () => getCachedLocalModels(),
+    [missingProfileId, missingModelSuggestion],
   );
 
   const displayProfileReasoningText = useMemo(() => {
@@ -242,34 +264,57 @@ export default function ChatComposer({
                 .join(" ");
 
               return (
-                <button
-                  key={profile.id}
-                  type="button"
-                  className={buttonClasses}
-                  onClick={() => {
-                    if (isDisabled) {
-                      return;
-                    }
-                    if (profileMode === "manual" && profile.id === manualProfileId) {
-                      void setProfileMode("auto");
-                      return;
-                    }
-                    void setProfileMode("manual");
-                    void setManualProfile(profile.id as ProviderProfileId);
-                  }}
-                  disabled={isDisabled}
-                  aria-pressed={isActive}
-                  title={modeTooltip}
-                >
-                  {profile.icon ? <span>{profile.icon}</span> : null}
-                  <span>{t(profile.label)}</span>
-                </button>
+                <div key={profile.id} className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    className={buttonClasses}
+                    onClick={() => {
+                      if (isDisabled) {
+                        return;
+                      }
+                      if (profileMode === "manual" && profile.id === manualProfileId) {
+                        void setProfileMode("auto");
+                        return;
+                      }
+                      void setProfileMode("manual");
+                      void setManualProfile(profile.id as ProviderProfileId);
+                    }}
+                    disabled={isDisabled}
+                    aria-pressed={isActive}
+                    title={modeTooltip}
+                  >
+                    {profile.icon ? <span>{profile.icon}</span> : null}
+                    <span>{t(profile.label)}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onTestProfile(profile.id as ProviderProfileId)}
+                    disabled={isDisabled || disabled || isStreaming}
+                    title={t("modelTestButton")}
+                    className="rounded-lg border border-blue-300/40 bg-blue-500/10 px-2 py-[3px] text-[10px] font-semibold uppercase tracking-[0.25em] text-blue-100 transition hover:bg-blue-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {t("modelTestButton")}
+                  </button>
+                </div>
               );
             })}
           </div>
-          {missingProfileId === "fast" && (
-            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-red-400/40 bg-red-500/10 px-3 py-2 text-[11px] text-red-100">
-              <span>{t("modelFastUnavailable")}</span>
+          {missingProfile && (
+            <div className="flex flex-wrap items-center gap-3 rounded-xl border border-red-400/40 bg-red-500/10 px-3 py-2 text-[11px] text-red-100">
+              <div className="flex flex-col gap-1">
+                <span>{t("modelProfileUnavailable")}</span>
+                <span className="font-semibold text-red-50">
+                  {t(missingProfile.label)}
+                </span>
+                {missingModelSuggestion && (
+                  <span className="font-mono text-[10px] text-red-50">
+                    {t("modelInstallSuggestion").replace(
+                      "{{model}}",
+                      missingModelSuggestion,
+                    )}
+                  </span>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={() => {

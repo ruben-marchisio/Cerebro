@@ -1,6 +1,19 @@
 export type RuntimeStatus = "local" | "remote" | "none";
 
-export type ProviderProfileId = "fast" | "balanced" | "thoughtful";
+export const PROVIDER_PROFILE_IDS = [
+  "fast",
+  "balanced",
+  "thoughtful",
+  "thoughtfulLocal",
+] as const;
+
+export type ProviderProfileId = (typeof PROVIDER_PROFILE_IDS)[number];
+
+export const isProviderProfileId = (
+  value: unknown,
+): value is ProviderProfileId =>
+  typeof value === "string" &&
+  (PROVIDER_PROFILE_IDS as readonly string[]).includes(value);
 
 export type ProviderMessage = {
   role: "system" | "user" | "assistant";
@@ -23,6 +36,7 @@ export type ProviderCompleteParams = {
 export type CompletionHandle = {
   controller: AbortController;
   response: Promise<string>;
+  model?: string;
 };
 
 export type StreamingProvider = {

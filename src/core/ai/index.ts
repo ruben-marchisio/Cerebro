@@ -59,4 +59,6 @@ export type {
   ProviderProfileId,
 } from "./types";
 
+export { PROVIDER_PROFILE_IDS, isProviderProfileId } from "./types";
+
 export { createFallbackMemoryProvider } from "./providers/fallback";

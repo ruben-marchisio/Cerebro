@@ -1,4 +1,5 @@
 import type { ProviderProfileId } from "../ai/types";
+import type { McpAccessLevel } from "../mcp/permissions";
 import type { StorageAdapter } from "../storage/adapter";
 
 type StoredSettings = Partial<AppSettings> & {
@@ -9,6 +10,9 @@ export type AppSettings = {
   language: "es" | "en";
   network: {
     enabled: boolean;
+  };
+  permissions: {
+    accessLevel: McpAccessLevel;
   };
   profile: {
     mode: "auto" | "manual";
@@ -21,6 +25,9 @@ export const defaultSettings: AppSettings = {
   network: {
     enabled: false,
   },
+  permissions: {
+    accessLevel: "basic",
+  },
   profile: {
     mode: "auto",
     manualId: "balanced",
@@ -32,8 +39,8 @@ export const settingsStorageKey = "cerebro:settings";
 const isLanguage = (value: unknown): value is AppSettings["language"] =>
   value === "es" || value === "en";
 
-const isProfileId = (value: unknown): value is ProviderProfileId =>
-  value === "fast" || value === "balanced" || value === "thoughtful";
+const isAccessLevel = (value: unknown): value is McpAccessLevel =>
+  value === "basic" || value === "dev" || value === "power";
 
 const normalizeNetworkSettings = (
   network: unknown,
@@ -51,6 +58,12 @@ const normalizeNetworkSettings = (
 
   return { ...defaultSettings.network };
 };
+
+const isProfileId = (value: unknown): value is ProviderProfileId =>
+  value === "fast" ||
+  value === "balanced" ||
+  value === "thoughtful" ||
+  value === "thoughtfulLocal";
 
 const normalizeProfileSettings = (
   profile: unknown,
@@ -84,6 +97,23 @@ const normalizeProfileSettings = (
   };
 };
 
+const normalizePermissionsSettings = (
+  permissions: unknown,
+): AppSettings["permissions"] => {
+  if (
+    permissions &&
+    typeof permissions === "object" &&
+    "accessLevel" in permissions &&
+    isAccessLevel((permissions as { accessLevel: unknown }).accessLevel)
+  ) {
+    return {
+      accessLevel: (permissions as { accessLevel: McpAccessLevel }).accessLevel,
+    };
+  }
+
+  return { ...defaultSettings.permissions };
+};
+
 export const getDefaultLanguage = (): AppSettings["language"] =>
   defaultSettings.language;
 
@@ -108,6 +138,7 @@ export const loadSettings = async (
         ? legacyModelValue.trim()
         : null;
 
+    const permissions = normalizePermissionsSettings(stored.permissions);
     const network = normalizeNetworkSettings(stored.network);
     const profile = normalizeProfileSettings(
       stored.profile,
@@ -126,6 +157,7 @@ export const loadSettings = async (
 
     return {
       language,
+      permissions,
       network,
       profile,
     };
